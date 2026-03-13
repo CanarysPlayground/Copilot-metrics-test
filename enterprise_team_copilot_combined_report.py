@@ -34,6 +34,12 @@ LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 DEBUG = os.getenv("DEBUG_JSON", "0") == "1"
 DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
 
+# Optional: filter to a single enterprise team slug (for testing / ad-hoc runs)
+TEAM_SLUG_FILTER = (os.getenv("TEAM_SLUG") or "").strip().lower()
+
+# Optional: override the recipient email for the filtered team slug
+TEAM_HEAD_EMAIL_OVERRIDE = (os.getenv("TEAM_HEAD_EMAIL") or "").strip()
+
 # -------------------------
 # Email / SMTP config
 # -------------------------
@@ -81,6 +87,11 @@ def _build_team_emails() -> Dict[str, str]:
     return mapping
 
 TEAM_EMAILS: Dict[str, str] = _build_team_emails()
+# If a single team slug filter is provided with an override email, inject it.
+if TEAM_SLUG_FILTER and TEAM_HEAD_EMAIL_OVERRIDE:
+    TEAM_EMAILS[TEAM_SLUG_FILTER] = TEAM_HEAD_EMAIL_OVERRIDE
+elif TEAM_HEAD_EMAIL_OVERRIDE and not TEAM_SLUG_FILTER:
+    print("[WARN] TEAM_HEAD_EMAIL is set but TEAM_SLUG is empty; the override email will be ignored.")
 EMAIL_ENABLED = bool(TEAM_EMAILS and SMTP_HOST and SENDER_EMAIL)
 
 if not GITHUB_TOKEN:
@@ -748,6 +759,14 @@ def main():
     print("Fetching enterprise teams...")
     teams = fetch_enterprise_teams()
     print(f"Enterprise teams fetched: {len(teams)}")
+
+    # If a single team slug filter is set, narrow down to that team only
+    if TEAM_SLUG_FILTER:
+        teams = [t for t in teams if (t.get("slug") or t.get("team_slug") or "").strip().lower() == TEAM_SLUG_FILTER]
+        if not teams:
+            print(f"[WARN] No team matched the TEAM_SLUG filter '{TEAM_SLUG_FILTER}'. Exiting.")
+            return
+        print(f"Filtered to {len(teams)} team(s) matching TEAM_SLUG='{TEAM_SLUG_FILTER}'")
 
     # 5) Build output rows (REMOVED columns: team_slug, scim_userName, copilot_status, seat_created_at, seat_updated_at)
     rows_out: List[Dict[str, Any]] = []
