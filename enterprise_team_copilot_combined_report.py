@@ -37,14 +37,26 @@ DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
 # -------------------------
 # Email / SMTP config
 # -------------------------
-# TEAM_EMAILS: JSON mapping of team slug (or team name) to recipient email.
-# Example: {"team-alpha": "alice@example.com", "team-beta": "bob@example.com"}
-TEAM_EMAILS_RAW = os.getenv("TEAM_EMAILS", "")
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
+
+# Enterprise teams and their head email environment variable names.
+# Each team head receives only their own team's daily Copilot report.
+ENTERPRISE_TEAM_EMAIL_VARS: Dict[str, str] = {
+    "accelerator-copilot": "ACCELERATOR_COPILOT_HEAD_EMAIL",
+    "delivery-copilot":    "DELIVERY_COPILOT_HEAD_EMAIL",
+    "genesis-copilot":     "GENESIS_COPILOT_HEAD_EMAIL",
+    "nt-copilot":          "NT_COPILOT_HEAD_EMAIL",
+    "pdg-copilot":         "PDG_COPILOT_HEAD_EMAIL",
+}
+
+# TEAM_EMAILS: JSON mapping of team slug (or team name) to recipient email.
+# Example: {"accelerator-copilot": "head@example.com", "delivery-copilot": "head2@example.com"}
+# If not provided, individual per-team env vars above are used instead.
+TEAM_EMAILS_RAW = os.getenv("TEAM_EMAILS", "")
 
 def _parse_team_emails(raw: str) -> Dict[str, str]:
     """Parse the TEAM_EMAILS JSON string into a dict mapping team key -> email."""
@@ -58,7 +70,17 @@ def _parse_team_emails(raw: str) -> Dict[str, str]:
         print(f"[WARN] Could not parse TEAM_EMAILS JSON: {exc}")
     return {}
 
-TEAM_EMAILS: Dict[str, str] = _parse_team_emails(TEAM_EMAILS_RAW)
+def _build_team_emails() -> Dict[str, str]:
+    """Build team -> email mapping from JSON env var or individual per-team env vars."""
+    mapping = _parse_team_emails(TEAM_EMAILS_RAW)
+    # Merge individual per-team env vars (they take precedence over TEAM_EMAILS JSON)
+    for team_slug, env_var in ENTERPRISE_TEAM_EMAIL_VARS.items():
+        email = os.getenv(env_var, "").strip()
+        if email:
+            mapping[team_slug] = email
+    return mapping
+
+TEAM_EMAILS: Dict[str, str] = _build_team_emails()
 EMAIL_ENABLED = bool(TEAM_EMAILS and SMTP_HOST and SENDER_EMAIL)
 
 if not GITHUB_TOKEN:

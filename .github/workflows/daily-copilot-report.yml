@@ -35,6 +35,12 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           TEAM_EMAILS: ${{ secrets.TEAM_EMAILS }}
+          # Per-team head email addresses (each team head receives only their team's report)
+          ACCELERATOR_COPILOT_HEAD_EMAIL: ${{ secrets.ACCELERATOR_COPILOT_HEAD_EMAIL }}
+          DELIVERY_COPILOT_HEAD_EMAIL: ${{ secrets.DELIVERY_COPILOT_HEAD_EMAIL }}
+          GENESIS_COPILOT_HEAD_EMAIL: ${{ secrets.GENESIS_COPILOT_HEAD_EMAIL }}
+          NT_COPILOT_HEAD_EMAIL: ${{ secrets.NT_COPILOT_HEAD_EMAIL }}
+          PDG_COPILOT_HEAD_EMAIL: ${{ secrets.PDG_COPILOT_HEAD_EMAIL }}
         run: python enterprise_team_copilot_combined_report.py
 
       - name: Upload report artifact
