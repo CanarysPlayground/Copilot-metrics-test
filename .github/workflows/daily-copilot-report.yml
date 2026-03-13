@@ -4,7 +4,20 @@ on:
   schedule:
     # Runs every day at 7:00 AM UTC
     - cron: "0 7 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      team_slug:
+        description: >
+          Enterprise team slug to generate the report for (e.g. "my-team").
+          Leave empty to process ALL enterprise teams (default behaviour).
+        required: false
+        type: string
+      team_head_email:
+        description: >
+          Email address to send the report to for the specified team slug.
+          Used only when team_slug is provided.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -35,6 +48,9 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           TEAM_EMAILS: ${{ secrets.TEAM_EMAILS }}
+          # Optional: filter to a single team slug (from workflow_dispatch input)
+          TEAM_SLUG: ${{ inputs.team_slug }}
+          TEAM_HEAD_EMAIL: ${{ inputs.team_head_email }}
           # Per-team head email addresses (each team head receives only their team's report)
           ACCELERATOR_COPILOT_HEAD_EMAIL: ${{ secrets.ACCELERATOR_COPILOT_HEAD_EMAIL }}
           DELIVERY_COPILOT_HEAD_EMAIL: ${{ secrets.DELIVERY_COPILOT_HEAD_EMAIL }}
