@@ -1,0 +1,47 @@
+name: Daily Copilot Metrics Report
+
+on:
+  schedule:
+    # Runs every day at 7:00 AM UTC
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  send-reports:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate and email team reports
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          ENTERPRISE_SLUG: ${{ secrets.ENTERPRISE_SLUG }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          TEAM_EMAILS: ${{ secrets.TEAM_EMAILS }}
+        run: python enterprise_team_copilot_combined_report.py
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-metrics-report
+          path: "*.csv"
+          retention-days: 30
+          if-no-files-found: ignore
