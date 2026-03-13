@@ -1,10 +1,14 @@
 import os
 import csv
+import io
+import smtplib
+import ssl
 import time
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from typing import Any, Dict, List, Optional, Set
 
 import requests
@@ -29,6 +33,33 @@ LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 # Debug for metrics report parsing
 DEBUG = os.getenv("DEBUG_JSON", "0") == "1"
 DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
+
+# -------------------------
+# Email / SMTP config
+# -------------------------
+# TEAM_EMAILS: JSON mapping of team slug (or team name) to recipient email.
+# Example: {"team-alpha": "alice@example.com", "team-beta": "bob@example.com"}
+TEAM_EMAILS_RAW = os.getenv("TEAM_EMAILS", "")
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
+
+def _parse_team_emails(raw: str) -> Dict[str, str]:
+    """Parse the TEAM_EMAILS JSON string into a dict mapping team key -> email."""
+    if not raw.strip():
+        return {}
+    try:
+        mapping = json.loads(raw)
+        if isinstance(mapping, dict):
+            return {str(k).strip().lower(): str(v).strip() for k, v in mapping.items() if v}
+    except json.JSONDecodeError as exc:
+        print(f"[WARN] Could not parse TEAM_EMAILS JSON: {exc}")
+    return {}
+
+TEAM_EMAILS: Dict[str, str] = _parse_team_emails(TEAM_EMAILS_RAW)
+EMAIL_ENABLED = bool(TEAM_EMAILS and SMTP_HOST and SENDER_EMAIL)
 
 if not GITHUB_TOKEN:
     raise SystemExit("Missing GITHUB_TOKEN in environment (.env).")
@@ -602,6 +633,66 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     }
 
 # -------------------------
+# Email helpers
+# -------------------------
+def build_team_csv_content(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
+    """Write *rows* into an in-memory CSV string."""
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buf.getvalue()
+
+
+def resolve_team_email(team_name: str, team_slug: str) -> Optional[str]:
+    """Look up the recipient email for a team using slug or name (case-insensitive)."""
+    slug_lower = team_slug.lower()
+    name_lower = team_name.lower()
+    return TEAM_EMAILS.get(slug_lower) or TEAM_EMAILS.get(name_lower)
+
+
+def send_team_report_email(
+    recipient: str,
+    team_name: str,
+    csv_content: str,
+    date_str: str,
+) -> None:
+    """Send an email with the team CSV report as an attachment."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Copilot Metrics Report – {team_name} – {date_str}"
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = recipient
+
+    msg.set_content(
+        f"Hello,\n\n"
+        f"Please find attached the daily GitHub Copilot usage report "
+        f"for team '{team_name}' (enterprise: {ENTERPRISE_SLUG}).\n\n"
+        f"Report date: {date_str}\n\n"
+        f"Regards,\n"
+        f"Copilot Metrics Automation"
+    )
+
+    filename = f"copilot_report_{team_name}_{date_str}.csv"
+    msg.add_attachment(
+        csv_content.encode("utf-8"),
+        maintype="text",
+        subtype="csv",
+        filename=filename,
+    )
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.ehlo()
+        server.starttls(context=context)
+        server.ehlo()
+        if SMTP_USERNAME and SMTP_PASSWORD:
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.send_message(msg)
+
+    print(f"[EMAIL] Report sent to {recipient} for team '{team_name}'")
+
+
+# -------------------------
 # Main
 # -------------------------
 def main():
@@ -711,6 +802,40 @@ def main():
         w.writerows(rows_out)
 
     print(f"CSV report generated: {OUTPUT_CSV}")
+
+    # 6) Email per-team reports to team heads
+    if EMAIL_ENABLED:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        # Group rows by team
+        rows_by_team: Dict[str, List[Dict[str, Any]]] = {}
+        team_name_for_slug: Dict[str, str] = {}
+        for row in rows_out:
+            t_name = row.get("team_name", "")
+            # Derive slug key from team name for lookup (lowercase, replace spaces with hyphens)
+            t_slug = re.sub(r"[^a-z0-9]+", "-", t_name.lower()).strip("-")
+            rows_by_team.setdefault(t_slug, []).append(row)
+            team_name_for_slug[t_slug] = t_name
+
+        sent = 0
+        for t_slug, t_rows in rows_by_team.items():
+            t_name = team_name_for_slug.get(t_slug, t_slug)
+            recipient = resolve_team_email(t_name, t_slug)
+            if not recipient:
+                print(f"[EMAIL] No recipient configured for team '{t_name}' (slug: {t_slug}), skipping.")
+                continue
+            csv_content = build_team_csv_content(t_rows, fieldnames)
+            try:
+                send_team_report_email(recipient, t_name, csv_content, date_str)
+                sent += 1
+            except Exception as exc:
+                print(f"[EMAIL] Failed to send report for team '{t_name}' to {recipient}: {exc}")
+
+        print(f"[EMAIL] {sent} team report(s) emailed successfully.")
+    else:
+        if TEAM_EMAILS_RAW:
+            print("[EMAIL] Email sending is disabled. Ensure SMTP_HOST and SENDER_EMAIL are set.")
+        else:
+            print("[EMAIL] No TEAM_EMAILS configured; skipping email delivery.")
 
 if __name__ == "__main__":
     main()
