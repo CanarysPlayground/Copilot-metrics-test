@@ -749,7 +749,7 @@ def main():
     teams = fetch_enterprise_teams()
     print(f"Enterprise teams fetched: {len(teams)}")
 
-    # 5) Build output rows (REMOVED columns: team_slug, scim_userName, copilot_status, seat_created_at, seat_updated_at)
+    # 5) Build output rows
     rows_out: List[Dict[str, Any]] = []
     no_scim_match = 0
 
@@ -777,6 +777,7 @@ def main():
             base = {
                 "enterprise": ENTERPRISE_SLUG,
                 "team_name": team_name,
+                "team_slug": team_slug,
                 "login": login,
                 "name": (scim or {}).get("name", ""),
                 "email": (scim or {}).get("email", ""),
@@ -796,6 +797,7 @@ def main():
         # identity / team
         "enterprise",
         "team_name",
+        "team_slug",
         "login",
         "name",
         "email",
@@ -833,8 +835,8 @@ def main():
         team_name_for_slug: Dict[str, str] = {}
         for row in rows_out:
             t_name = row.get("team_name", "")
-            # Derive slug key from team name for lookup (lowercase, replace spaces with hyphens)
-            t_slug = re.sub(r"[^a-z0-9]+", "-", t_name.lower()).strip("-")
+            # Use the authoritative team slug from the API; fall back to deriving from name
+            t_slug = row.get("team_slug", "").lower() or re.sub(r"[^a-z0-9]+", "-", t_name.lower()).strip("-")
             rows_by_team.setdefault(t_slug, []).append(row)
             team_name_for_slug[t_slug] = t_name
 
