@@ -415,6 +415,22 @@ def fetch_enterprise_team_memberships(team_slug):
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/teams/{team_slug}/memberships"
     return fetch_rest_list_paged(url, headers=HEADERS_JSON, keys=("memberships", "items", "data"), per_page=100)
 
+def _extract_team_slug(t: dict) -> str:
+    """Extract the slug for an enterprise team object.
+
+    GitHub's Enterprise Teams API returns a ``slug`` field on each team.
+    If that field is absent, fall back to ``team_slug``.  If neither is
+    present, derive a slug from the ``name`` field so that the TEAM_SLUG
+    filter can still match regardless of which field the API populates.
+    """
+    slug = (t.get("slug") or t.get("team_slug") or "").strip()
+    if slug:
+        return slug.lower()
+    name = (t.get("name") or t.get("display_name") or "").strip()
+    if name:
+        return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return ""
+
 def parse_membership_login(m):
     if not isinstance(m, dict):
         return ""
@@ -817,12 +833,36 @@ def main():
     teams = fetch_enterprise_teams()
     print(f"Enterprise teams fetched: {len(teams)}")
 
+    if len(teams) == 0:
+        print(
+            "[WARN] No enterprise teams were returned by the API. "
+            "This usually means the token lacks the required enterprise-level read permission "
+            "(e.g. 'admin:enterprise' scope for classic PATs, or the 'Enterprise > Teams' "
+            "read permission for fine-grained tokens). "
+            "Please verify your GH_PAT token scopes and re-run the workflow."
+        )
+        if TEAM_SLUG_FILTER:
+            return
+
     # If a single team slug filter is set, narrow down to that team only
     if TEAM_SLUG_FILTER:
-        teams = [t for t in teams if (t.get("slug") or t.get("team_slug") or "").strip().lower() == TEAM_SLUG_FILTER]
-        if not teams:
-            print(f"[WARN] No team matched the TEAM_SLUG filter '{TEAM_SLUG_FILTER}'. Exiting.")
+        slug_to_name = {
+            _extract_team_slug(t): (t.get("name") or t.get("display_name") or "unknown")
+            for t in teams
+        }
+        filtered_teams = [t for t in teams if _extract_team_slug(t) == TEAM_SLUG_FILTER]
+        if not filtered_teams:
+            available = ", ".join(
+                f"'{slug}' (name: {name})" for slug, name in slug_to_name.items() if slug
+            ) or "(none)"
+            print(
+                f"[WARN] No team matched the TEAM_SLUG filter '{TEAM_SLUG_FILTER}'. "
+                f"Available enterprise team slugs: {available}. "
+                "Check that you are using the team slug (not the display name) and that the token "
+                "has permission to read enterprise teams. Exiting."
+            )
             return
+        teams = filtered_teams
         print(f"Filtered to {len(teams)} team(s) matching TEAM_SLUG='{TEAM_SLUG_FILTER}'")
 
     # 5) Build output rows (REMOVED columns: team_slug, scim_userName, copilot_status, seat_created_at, seat_updated_at)
@@ -831,7 +871,7 @@ def main():
 
     for i, t in enumerate(teams, start=1):
         team_name = (t.get("name") or t.get("display_name") or t.get("slug") or "").strip()
-        team_slug = (t.get("slug") or t.get("team_slug") or "").strip()
+        team_slug = _extract_team_slug(t)
         if not team_slug:
             continue
 
