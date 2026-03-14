@@ -709,12 +709,16 @@ def main():
             """Lowercase and replace non-alphanumeric runs with hyphens (slug normalization)."""
             return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
+        def _slug_local(s: str) -> str:
+            """Strip the enterprise namespace prefix (e.g. 'ent:test' -> 'test')."""
+            return s.split(":", 1)[-1] if ":" in s else s
+
         # Always list available teams so users can verify / copy the correct slugs.
         print("[INFO] Available enterprise teams (use the slug in ENTERPRISE_TEAM_SLUGS):")
         for t in all_teams:
             t_slug = (t.get("slug") or t.get("team_slug") or "").strip()
             t_name = (t.get("name") or t.get("display_name") or t_slug).strip()
-            print(f"  slug={t_slug!r}  name={t_name!r}")
+            print(f"  slug={t_slug!r}  local={_slug_local(t_slug)!r}  name={t_name!r}")
 
         requested_lower = {s.lower() for s in ENTERPRISE_TEAM_SLUGS}
         requested_normalized = {_normalize(s) for s in ENTERPRISE_TEAM_SLUGS}
@@ -727,11 +731,14 @@ def main():
 
         def _team_matches(t):
             slug = _team_slug_key(t)
+            slug_local = _slug_local(slug)
             name = _team_name_key(t)
             return (
                 slug in requested_lower
+                or slug_local in requested_lower
                 or name in requested_lower
                 or _normalize(slug) in requested_normalized
+                or _normalize(slug_local) in requested_normalized
             )
 
         teams = [t for t in all_teams if _team_matches(t)]
@@ -739,8 +746,10 @@ def main():
         for t in teams:
             slug = _team_slug_key(t)
             found_keys.add(slug)
+            found_keys.add(_slug_local(slug))
             found_keys.add(_team_name_key(t))
             found_keys.add(_normalize(slug))
+            found_keys.add(_normalize(_slug_local(slug)))
         missing = [
             s for s in ENTERPRISE_TEAM_SLUGS
             if s.lower() not in found_keys and _normalize(s) not in found_keys
@@ -847,7 +856,10 @@ def main():
 
         if ENTERPRISE_TEAM_SLUGS:
             # Write a separate CSV report for this team.
-            team_csv = f"enterprise_team_{team_slug.replace(':', '-')}_copilot_{date_str}.csv"
+            # Strip the enterprise namespace prefix (e.g. "ent:admin" -> "admin") so the
+            # filename is "enterprise_team_admin_copilot_<date>.csv" rather than
+            # "enterprise_team_ent-admin_copilot_<date>.csv".
+            team_csv = f"enterprise_team_{_slug_local(team_slug)}_copilot_{date_str}.csv"
             with open(team_csv, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=fieldnames)
                 w.writeheader()
