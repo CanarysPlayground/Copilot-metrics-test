@@ -847,7 +847,7 @@ def main():
 
         if ENTERPRISE_TEAM_SLUGS:
             # Write a separate CSV report for this team.
-            team_csv = f"enterprise_team_{team_slug}_copilot_{date_str}.csv"
+            team_csv = f"enterprise_team_{team_slug.replace(':', '-')}_copilot_{date_str}.csv"
             with open(team_csv, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=fieldnames)
                 w.writeheader()
