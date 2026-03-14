@@ -23,6 +23,12 @@ ENTERPRISE_SLUG = os.getenv("ENTERPRISE_SLUG")
 
 OUTPUT_CSV = os.getenv("OUTPUT_CSV") or f"enterprise_team_users_copilot_combined_{datetime.now().strftime('%Y%m%d')}.csv"
 
+# Optional: comma-separated list of team slugs to process (e.g. "team-a,team-b,team-c").
+# When set, only those teams are processed and each team gets its own CSV report.
+# When unset, all enterprise teams are processed and written to OUTPUT_CSV.
+_raw_team_slugs = os.getenv("ENTERPRISE_TEAM_SLUGS", "").strip()
+ENTERPRISE_TEAM_SLUGS: List[str] = [s.strip() for s in _raw_team_slugs.split(",") if s.strip()] if _raw_team_slugs else []
+
 # Optional override if your suffix is not derived correctly from enterprise slug
 LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 
@@ -662,7 +668,11 @@ def main():
     print(f"Enterprise: {ENTERPRISE_SLUG}")
     print(f"API_BASE: {API_BASE}")
     print(f"Derived login suffix token: {derive_suffix_token()} (override with LOGIN_SUFFIX env if needed)")
-    print(f"Output: {OUTPUT_CSV}")
+    if ENTERPRISE_TEAM_SLUGS:
+        print(f"Filtering to {len(ENTERPRISE_TEAM_SLUGS)} team(s): {', '.join(ENTERPRISE_TEAM_SLUGS)}")
+        print(f"Each team will be written to its own CSV report.")
+    else:
+        print(f"Output: {OUTPUT_CSV}")
 
     # 1) SCIM index (name/email) — only available for EMU enterprises
     print("Fetching SCIM users...")
@@ -690,12 +700,58 @@ def main():
 
     # 4) Teams + memberships
     print("Fetching enterprise teams...")
-    teams = fetch_enterprise_teams()
-    print(f"Enterprise teams fetched: {len(teams)}")
+    all_teams = fetch_enterprise_teams()
+    print(f"Enterprise teams fetched: {len(all_teams)}")
 
-    # 5) Build output rows (REMOVED columns: team_slug, scim_userName, copilot_status, seat_created_at, seat_updated_at)
-    rows_out: List[Dict[str, Any]] = []
-    no_scim_match = 0
+    # Filter to only the requested team slugs when ENTERPRISE_TEAM_SLUGS is set.
+    if ENTERPRISE_TEAM_SLUGS:
+        requested = {s.lower() for s in ENTERPRISE_TEAM_SLUGS}
+        def _team_slug_key(t):
+            return (t.get("slug") or t.get("team_slug") or "").strip().lower()
+        teams = [t for t in all_teams if _team_slug_key(t) in requested]
+        found_slugs = {_team_slug_key(t) for t in teams}
+        missing = [s for s in ENTERPRISE_TEAM_SLUGS if s.lower() not in found_slugs]
+        if missing:
+            print(f"[WARN] The following team slugs were not found in the enterprise: {', '.join(missing)}")
+        print(f"Teams to process: {len(teams)}")
+    else:
+        teams = all_teams
+
+    fieldnames = [
+        # identity / team
+        "enterprise",
+        "team_name",
+        "login",
+        "name",
+        "email",
+        # seat (billing)
+        "copilot_assigned",
+        "plan_type",
+        "last_activity_at",
+        "active_status",
+        # metrics (28d)
+        "metrics_interactions_28d",
+        "metrics_completions_28d",
+        "metrics_acceptances_28d",
+        "metrics_acceptance_pct_28d",
+        "metrics_days_active_28d",
+        "metrics_loc_suggested_28d",
+        "metrics_loc_added_28d",
+        "metrics_loc_deleted_28d",
+        "metrics_top_model_28d",
+        "metrics_top_language_28d",
+        "metrics_top_feature_28d",
+    ]
+
+    # 5) Build output rows per team.
+    # When ENTERPRISE_TEAM_SLUGS is set, each team gets its own CSV file.
+    # Otherwise all teams are combined into OUTPUT_CSV (original behaviour).
+    date_str = datetime.now().strftime("%Y%m%d")
+    total_rows = 0
+    total_no_scim = 0
+
+    # Accumulator used only in combined (non-filtered) mode.
+    combined_rows: List[Dict[str, Any]] = []
 
     for i, t in enumerate(teams, start=1):
         team_name = (t.get("name") or t.get("display_name") or t.get("slug") or "").strip()
@@ -705,6 +761,9 @@ def main():
 
         print(f"[{i}/{len(teams)}] Fetching users for team: {team_name} ({team_slug})")
         memberships = fetch_enterprise_team_memberships(team_slug)
+
+        team_rows: List[Dict[str, Any]] = []
+        no_scim_match = 0
 
         for m in memberships:
             login = parse_membership_login(m)
@@ -734,43 +793,33 @@ def main():
             }
 
             base.update(metrics_row_for_user(agg))
-            rows_out.append(base)
+            team_rows.append(base)
 
-    print(f"Total rows (team-user): {len(rows_out)}")
-    print(f"Users with no SCIM match (email/name blank): {no_scim_match}")
+        total_rows += len(team_rows)
+        total_no_scim += no_scim_match
 
-    fieldnames = [
-        # identity / team
-        "enterprise",
-        "team_name",
-        "login",
-        "name",
-        "email",
-        # seat (billing)
-        "copilot_assigned",
-        "plan_type",
-        "last_activity_at",
-        "active_status",
-        # metrics (28d)
-        "metrics_interactions_28d",
-        "metrics_completions_28d",
-        "metrics_acceptances_28d",
-        "metrics_acceptance_pct_28d",
-        "metrics_days_active_28d",
-        "metrics_loc_suggested_28d",
-        "metrics_loc_added_28d",
-        "metrics_loc_deleted_28d",
-        "metrics_top_model_28d",
-        "metrics_top_language_28d",
-        "metrics_top_feature_28d",
-    ]
+        if ENTERPRISE_TEAM_SLUGS:
+            # Write a separate CSV report for this team.
+            team_csv = f"enterprise_team_{team_slug}_copilot_{date_str}.csv"
+            with open(team_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w.writeheader()
+                w.writerows(team_rows)
+            print(f"  -> {len(team_rows)} rows written to {team_csv} "
+                  f"(SCIM misses: {no_scim_match})")
+        else:
+            combined_rows.extend(team_rows)
 
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(rows_out)
+    print(f"Total rows (team-user): {total_rows}")
+    print(f"Users with no SCIM match (email/name blank): {total_no_scim}")
 
-    print(f"CSV report generated: {OUTPUT_CSV}")
+    if not ENTERPRISE_TEAM_SLUGS:
+        # Original behaviour: single combined CSV.
+        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(combined_rows)
+        print(f"CSV report generated: {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
