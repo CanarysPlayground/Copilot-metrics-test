@@ -709,6 +709,13 @@ def main():
             """Lowercase and replace non-alphanumeric runs with hyphens (slug normalization)."""
             return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
+        # Always list available teams so users can verify / copy the correct slugs.
+        print("[INFO] Available enterprise teams (use the slug in ENTERPRISE_TEAM_SLUGS):")
+        for t in all_teams:
+            t_slug = (t.get("slug") or t.get("team_slug") or "").strip()
+            t_name = (t.get("name") or t.get("display_name") or t_slug).strip()
+            print(f"  slug={t_slug!r}  name={t_name!r}")
+
         requested_lower = {s.lower() for s in ENTERPRISE_TEAM_SLUGS}
         requested_normalized = {_normalize(s) for s in ENTERPRISE_TEAM_SLUGS}
 
@@ -728,7 +735,7 @@ def main():
             )
 
         teams = [t for t in all_teams if _team_matches(t)]
-        found_keys: set = set()
+        found_keys: set[str] = set()
         for t in teams:
             slug = _team_slug_key(t)
             found_keys.add(slug)
@@ -739,17 +746,19 @@ def main():
             if s.lower() not in found_keys and _normalize(s) not in found_keys
         ]
         if missing:
-            print(f"[WARN] The following team slugs/names were not found in the enterprise: {', '.join(missing)}")
+            available_list = ", ".join(
+                f"{(t.get('slug') or t.get('team_slug') or '').strip()!r}" for t in all_teams
+            )
+            print(
+                f"[WARN] The following requested team slugs/names were not found: {', '.join(missing)}. "
+                f"Available slugs: {available_list}"
+            )
         if not teams:
-            available = [
-                f"{_team_name_key(t)} ({_team_slug_key(t)})" for t in all_teams
-            ]
             raise SystemExit(
                 f"[ERROR] None of the {len(ENTERPRISE_TEAM_SLUGS)} requested team(s) were found "
                 f"in the enterprise. Requested: {', '.join(ENTERPRISE_TEAM_SLUGS)}. "
-                f"Available teams: {', '.join(available) or 'none'}. "
-                f"Update the ENTERPRISE_TEAM_SLUGS secret with correct team slug(s) "
-                f"or leave it empty to process all teams."
+                f"See the '[INFO] Available enterprise teams' listing above for correct slug values. "
+                f"Update the ENTERPRISE_TEAM_SLUGS secret or leave it empty to process all teams."
             )
         print(f"Teams to process: {len(teams)}")
     else:
