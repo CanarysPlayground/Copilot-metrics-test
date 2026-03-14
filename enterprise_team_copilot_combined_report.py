@@ -705,14 +705,52 @@ def main():
 
     # Filter to only the requested team slugs when ENTERPRISE_TEAM_SLUGS is set.
     if ENTERPRISE_TEAM_SLUGS:
-        requested = {s.lower() for s in ENTERPRISE_TEAM_SLUGS}
+        def _normalize(s: str) -> str:
+            """Lowercase and replace non-alphanumeric runs with hyphens (slug normalization)."""
+            return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+        requested_lower = {s.lower() for s in ENTERPRISE_TEAM_SLUGS}
+        requested_normalized = {_normalize(s) for s in ENTERPRISE_TEAM_SLUGS}
+
         def _team_slug_key(t):
             return (t.get("slug") or t.get("team_slug") or "").strip().lower()
-        teams = [t for t in all_teams if _team_slug_key(t) in requested]
-        found_slugs = {_team_slug_key(t) for t in teams}
-        missing = [s for s in ENTERPRISE_TEAM_SLUGS if s.lower() not in found_slugs]
+
+        def _team_name_key(t):
+            return (t.get("name") or t.get("display_name") or "").strip().lower()
+
+        def _team_matches(t):
+            slug = _team_slug_key(t)
+            name = _team_name_key(t)
+            return (
+                slug in requested_lower
+                or name in requested_lower
+                or _normalize(slug) in requested_normalized
+            )
+
+        teams = [t for t in all_teams if _team_matches(t)]
+        found_keys: set = set()
+        for t in teams:
+            slug = _team_slug_key(t)
+            found_keys.add(slug)
+            found_keys.add(_team_name_key(t))
+            found_keys.add(_normalize(slug))
+        missing = [
+            s for s in ENTERPRISE_TEAM_SLUGS
+            if s.lower() not in found_keys and _normalize(s) not in found_keys
+        ]
         if missing:
-            print(f"[WARN] The following team slugs were not found in the enterprise: {', '.join(missing)}")
+            print(f"[WARN] The following team slugs/names were not found in the enterprise: {', '.join(missing)}")
+        if not teams:
+            available = [
+                f"{_team_name_key(t)} ({_team_slug_key(t)})" for t in all_teams
+            ]
+            raise SystemExit(
+                f"[ERROR] None of the {len(ENTERPRISE_TEAM_SLUGS)} requested team(s) were found "
+                f"in the enterprise. Requested: {', '.join(ENTERPRISE_TEAM_SLUGS)}. "
+                f"Available teams: {', '.join(available) or 'none'}. "
+                f"Update the ENTERPRISE_TEAM_SLUGS secret with correct team slug(s) "
+                f"or leave it empty to process all teams."
+            )
         print(f"Teams to process: {len(teams)}")
     else:
         teams = all_teams
