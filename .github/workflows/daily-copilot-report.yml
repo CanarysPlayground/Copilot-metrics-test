@@ -29,11 +29,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
           ENTERPRISE_SLUG: ${{ secrets.ENTERPRISE_SLUG }}
+          # Comma-separated list of team slugs to process (each gets its own CSV).
+          # Leave empty to process all teams into a single combined CSV.
+          ENTERPRISE_TEAM_SLUGS: ${{ secrets.ENTERPRISE_TEAM_SLUGS }}
         run: python enterprise_team_copilot_combined_report.py
 
       - name: Upload CSV report as artifact
         uses: actions/upload-artifact@v4
         with:
           name: copilot-metrics-report-${{ github.run_id }}
-          path: "enterprise_team_users_copilot_combined_*.csv"
+          path: "enterprise_team_*_copilot_*.csv"
           retention-days: 90
