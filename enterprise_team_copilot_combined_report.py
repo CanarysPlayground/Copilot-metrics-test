@@ -101,6 +101,12 @@ def fetch_rest_list_paged(url, headers, keys, per_page=100, extra_params=None):
 # SCIM helpers
 # -------------------------
 def fetch_all_scim_users():
+    """Fetch all SCIM users for the enterprise.
+
+    Returns an empty list (with a warning) when the enterprise does not support
+    SCIM (e.g. non-EMU accounts return 404/501). The rest of the pipeline
+    continues and falls back to the GitHub users API for display names.
+    """
     url = f"{API_BASE}/scim/v2/enterprises/{ENTERPRISE_SLUG}/Users"
 
     start_index = 1
@@ -109,6 +115,15 @@ def fetch_all_scim_users():
 
     while True:
         resp = gh_get(url, headers=HEADERS_SCIM, params={"startIndex": start_index, "count": count})
+
+        if resp.status_code in (404, 501):
+            print(
+                f"[WARN] SCIM endpoint returned {resp.status_code} – enterprise '{ENTERPRISE_SLUG}' "
+                "does not appear to use Enterprise Managed Users (EMU). "
+                "Name/email fields will be populated from the GitHub users API instead."
+            )
+            return []
+
         resp.raise_for_status()
 
         payload = resp.json() or {}
@@ -253,6 +268,41 @@ def scim_lookup(scim_index: Dict[str, Dict[str, str]], login: str) -> Dict[str, 
             return hit
 
     return {}
+
+# -------------------------
+# Fallback: GitHub user lookup (non-EMU enterprises)
+# -------------------------
+_gh_user_cache: Dict[str, Dict[str, str]] = {}
+
+def fetch_github_user_info(login: str) -> Dict[str, str]:
+    """Fetch display name for a GitHub login via the public users API.
+
+    Email is intentionally omitted here because most GitHub users keep their
+    email private; callers should not rely on it being populated.
+    Falls back gracefully on any error.
+    """
+    if not login:
+        return {}
+    key = login.lower()
+    if key in _gh_user_cache:
+        return _gh_user_cache[key]
+
+    url = f"{API_BASE}/users/{login}"
+    try:
+        resp = gh_get(url, headers=HEADERS_JSON)
+        if resp.status_code == 404:
+            _gh_user_cache[key] = {}
+            return {}
+        resp.raise_for_status()
+        data = resp.json() or {}
+        name = str(data.get("name") or "").strip()
+        result = {"name": name, "email": ""}
+        _gh_user_cache[key] = result
+        return result
+    except requests.exceptions.RequestException as exc:
+        print(f"[WARN] Could not fetch GitHub user info for '{login}': {exc}")
+        _gh_user_cache[key] = {}
+        return {}
 
 # -------------------------
 # Copilot seats (billing)
@@ -421,7 +471,11 @@ def parse_report_payload(text: str) -> List[Dict[str, Any]]:
 
 def download_latest_users_28_day_report_rows() -> List[Dict[str, Any]]:
     latest_url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/copilot/metrics/reports/users-28-day/latest"
-    latest_payload = get_json_from_api(latest_url)
+    try:
+        latest_payload = get_json_from_api(latest_url)
+    except requests.exceptions.RequestException as exc:
+        print(f"[WARN] Could not fetch Copilot metrics report: {exc}. Metrics columns will be empty.")
+        return []
     dump_json(latest_payload, "latest_payload")
 
     if isinstance(latest_payload, dict) and "download_links" in latest_payload:
@@ -610,11 +664,14 @@ def main():
     print(f"Derived login suffix token: {derive_suffix_token()} (override with LOGIN_SUFFIX env if needed)")
     print(f"Output: {OUTPUT_CSV}")
 
-    # 1) SCIM index (name/email)
+    # 1) SCIM index (name/email) — only available for EMU enterprises
     print("Fetching SCIM users...")
     scim_users = fetch_all_scim_users()
     scim_index = build_scim_index(scim_users)
+    scim_available = bool(scim_users)
     print(f"SCIM users fetched: {len(scim_users)}; SCIM index keys: {len(scim_index)}")
+    if not scim_available:
+        print("[INFO] SCIM not available – will fall back to GitHub users API for display names.")
 
     # 2) Copilot seats (billing)
     print("Fetching Copilot billing seats...")
@@ -657,6 +714,9 @@ def main():
             scim = scim_lookup(scim_index, login)
             if not scim:
                 no_scim_match += 1
+                # For non-EMU enterprises fall back to the GitHub users API for the display name.
+                if not scim_available:
+                    scim = fetch_github_user_info(login)
 
             seat = seats_by_login.get(login)
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
