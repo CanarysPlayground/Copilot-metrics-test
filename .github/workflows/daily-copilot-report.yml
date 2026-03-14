@@ -1,0 +1,39 @@
+name: Daily Copilot Metrics Report
+
+on:
+  schedule:
+    # Runs every day at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  generate-report:
+    name: Generate Enterprise Team Copilot Report
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Copilot metrics report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
+          ENTERPRISE_SLUG: ${{ secrets.ENTERPRISE_SLUG }}
+        run: python enterprise_team_copilot_combined_report.py
+
+      - name: Upload CSV report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-metrics-report-${{ github.run_id }}
+          path: "enterprise_team_users_copilot_combined_*.csv"
+          retention-days: 90
