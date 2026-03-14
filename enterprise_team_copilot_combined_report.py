@@ -1,14 +1,10 @@
 import os
 import csv
-import io
-import smtplib
-import ssl
 import time
 import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from email.message import EmailMessage
 from typing import Any, Dict, List, Optional, Set
 
 import requests
@@ -33,66 +29,6 @@ LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 # Debug for metrics report parsing
 DEBUG = os.getenv("DEBUG_JSON", "0") == "1"
 DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
-
-# Optional: filter to a single enterprise team slug (for testing / ad-hoc runs)
-TEAM_SLUG_FILTER = (os.getenv("TEAM_SLUG") or "").strip().lower()
-
-# Optional: override the recipient email for the filtered team slug
-TEAM_HEAD_EMAIL_OVERRIDE = (os.getenv("TEAM_HEAD_EMAIL") or "").strip()
-
-# -------------------------
-# Email / SMTP config
-# -------------------------
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
-
-# Enterprise teams and their head email environment variable names.
-# Each team head receives only their own team's daily Copilot report.
-ENTERPRISE_TEAM_EMAIL_VARS: Dict[str, str] = {
-    "accelerator-copilot": "ACCELERATOR_COPILOT_HEAD_EMAIL",
-    "delivery-copilot":    "DELIVERY_COPILOT_HEAD_EMAIL",
-    "genesis-copilot":     "GENESIS_COPILOT_HEAD_EMAIL",
-    "nt-copilot":          "NT_COPILOT_HEAD_EMAIL",
-    "pdg-copilot":         "PDG_COPILOT_HEAD_EMAIL",
-}
-
-# TEAM_EMAILS: JSON mapping of team slug (or team name) to recipient email.
-# Example: {"accelerator-copilot": "head@example.com", "delivery-copilot": "head2@example.com"}
-# If not provided, individual per-team env vars above are used instead.
-TEAM_EMAILS_RAW = os.getenv("TEAM_EMAILS", "")
-
-def _parse_team_emails(raw: str) -> Dict[str, str]:
-    """Parse the TEAM_EMAILS JSON string into a dict mapping team key -> email."""
-    if not raw.strip():
-        return {}
-    try:
-        mapping = json.loads(raw)
-        if isinstance(mapping, dict):
-            return {str(k).strip().lower(): str(v).strip() for k, v in mapping.items() if v}
-    except json.JSONDecodeError as exc:
-        print(f"[WARN] Could not parse TEAM_EMAILS JSON: {exc}")
-    return {}
-
-def _build_team_emails() -> Dict[str, str]:
-    """Build team -> email mapping from JSON env var or individual per-team env vars."""
-    mapping = _parse_team_emails(TEAM_EMAILS_RAW)
-    # Merge individual per-team env vars (they take precedence over TEAM_EMAILS JSON)
-    for team_slug, env_var in ENTERPRISE_TEAM_EMAIL_VARS.items():
-        email = os.getenv(env_var, "").strip()
-        if email:
-            mapping[team_slug] = email
-    return mapping
-
-TEAM_EMAILS: Dict[str, str] = _build_team_emails()
-# If a single team slug filter is provided with an override email, inject it.
-if TEAM_SLUG_FILTER and TEAM_HEAD_EMAIL_OVERRIDE:
-    TEAM_EMAILS[TEAM_SLUG_FILTER] = TEAM_HEAD_EMAIL_OVERRIDE
-elif TEAM_HEAD_EMAIL_OVERRIDE and not TEAM_SLUG_FILTER:
-    print("[WARN] TEAM_HEAD_EMAIL is set but TEAM_SLUG is empty; the override email will be ignored.")
-EMAIL_ENABLED = bool(TEAM_EMAILS and SMTP_HOST and SENDER_EMAIL)
 
 if not GITHUB_TOKEN:
     raise SystemExit("Missing GITHUB_TOKEN in environment (.env).")
@@ -165,12 +101,6 @@ def fetch_rest_list_paged(url, headers, keys, per_page=100, extra_params=None):
 # SCIM helpers
 # -------------------------
 def fetch_all_scim_users():
-    """Fetch all SCIM users for the enterprise.
-
-    Returns an empty list (with a warning) when the enterprise does not support
-    SCIM (e.g. non-EMU accounts return 404/501). The rest of the pipeline
-    continues and falls back to the GitHub users API for display names.
-    """
     url = f"{API_BASE}/scim/v2/enterprises/{ENTERPRISE_SLUG}/Users"
 
     start_index = 1
@@ -179,15 +109,6 @@ def fetch_all_scim_users():
 
     while True:
         resp = gh_get(url, headers=HEADERS_SCIM, params={"startIndex": start_index, "count": count})
-
-        if resp.status_code in (404, 501):
-            print(
-                f"[WARN] SCIM endpoint returned {resp.status_code} – enterprise '{ENTERPRISE_SLUG}' "
-                "does not appear to use Enterprise Managed Users (EMU). "
-                "Name/email fields will be populated from the GitHub users API instead."
-            )
-            return []
-
         resp.raise_for_status()
 
         payload = resp.json() or {}
@@ -332,41 +253,6 @@ def scim_lookup(scim_index: Dict[str, Dict[str, str]], login: str) -> Dict[str, 
             return hit
 
     return {}
-
-# -------------------------
-# Fallback: GitHub user lookup (non-EMU enterprises)
-# -------------------------
-_gh_user_cache: Dict[str, Dict[str, str]] = {}
-
-def fetch_github_user_info(login: str) -> Dict[str, str]:
-    """Fetch display name for a GitHub login via the public users API.
-
-    Email is intentionally omitted here because most GitHub users keep their
-    email private; callers should not rely on it being populated.
-    Falls back gracefully on any error.
-    """
-    if not login:
-        return {}
-    key = login.lower()
-    if key in _gh_user_cache:
-        return _gh_user_cache[key]
-
-    url = f"{API_BASE}/users/{login}"
-    try:
-        resp = gh_get(url, headers=HEADERS_JSON)
-        if resp.status_code == 404:
-            _gh_user_cache[key] = {}
-            return {}
-        resp.raise_for_status()
-        data = resp.json() or {}
-        name = str(data.get("name") or "").strip()
-        result = {"name": name, "email": ""}
-        _gh_user_cache[key] = result
-        return result
-    except requests.exceptions.RequestException as exc:
-        print(f"[WARN] Could not fetch GitHub user info for '{login}': {exc}")
-        _gh_user_cache[key] = {}
-        return {}
 
 # -------------------------
 # Copilot seats (billing)
@@ -535,11 +421,7 @@ def parse_report_payload(text: str) -> List[Dict[str, Any]]:
 
 def download_latest_users_28_day_report_rows() -> List[Dict[str, Any]]:
     latest_url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/copilot/metrics/reports/users-28-day/latest"
-    try:
-        latest_payload = get_json_from_api(latest_url)
-    except requests.exceptions.RequestException as exc:
-        print(f"[WARN] Could not fetch Copilot metrics report: {exc}. Metrics columns will be empty.")
-        return []
+    latest_payload = get_json_from_api(latest_url)
     dump_json(latest_payload, "latest_payload")
 
     if isinstance(latest_payload, dict) and "download_links" in latest_payload:
@@ -720,66 +602,6 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     }
 
 # -------------------------
-# Email helpers
-# -------------------------
-def build_team_csv_content(rows: List[Dict[str, Any]], fieldnames: List[str]) -> str:
-    """Write *rows* into an in-memory CSV string."""
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-    return buf.getvalue()
-
-
-def resolve_team_email(team_name: str, team_slug: str) -> Optional[str]:
-    """Look up the recipient email for a team using slug or name (case-insensitive)."""
-    slug_lower = team_slug.lower()
-    name_lower = team_name.lower()
-    return TEAM_EMAILS.get(slug_lower) or TEAM_EMAILS.get(name_lower)
-
-
-def send_team_report_email(
-    recipient: str,
-    team_name: str,
-    csv_content: str,
-    date_str: str,
-) -> None:
-    """Send an email with the team CSV report as an attachment."""
-    msg = EmailMessage()
-    msg["Subject"] = f"Copilot Metrics Report – {team_name} – {date_str}"
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = recipient
-
-    msg.set_content(
-        f"Hello,\n\n"
-        f"Please find attached the daily GitHub Copilot usage report "
-        f"for team '{team_name}' (enterprise: {ENTERPRISE_SLUG}).\n\n"
-        f"Report date: {date_str}\n\n"
-        f"Regards,\n"
-        f"Copilot Metrics Automation"
-    )
-
-    filename = f"copilot_report_{team_name}_{date_str}.csv"
-    msg.add_attachment(
-        csv_content.encode("utf-8"),
-        maintype="text",
-        subtype="csv",
-        filename=filename,
-    )
-
-    context = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls(context=context)
-        server.ehlo()
-        if SMTP_USERNAME and SMTP_PASSWORD:
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-
-    print(f"[EMAIL] Report sent to {recipient} for team '{team_name}'")
-
-
-# -------------------------
 # Main
 # -------------------------
 def main():
@@ -788,14 +610,11 @@ def main():
     print(f"Derived login suffix token: {derive_suffix_token()} (override with LOGIN_SUFFIX env if needed)")
     print(f"Output: {OUTPUT_CSV}")
 
-    # 1) SCIM index (name/email) — only available for EMU enterprises
+    # 1) SCIM index (name/email)
     print("Fetching SCIM users...")
     scim_users = fetch_all_scim_users()
     scim_index = build_scim_index(scim_users)
-    scim_available = bool(scim_users)
     print(f"SCIM users fetched: {len(scim_users)}; SCIM index keys: {len(scim_index)}")
-    if not scim_available:
-        print("[INFO] SCIM not available – will fall back to GitHub users API for display names.")
 
     # 2) Copilot seats (billing)
     print("Fetching Copilot billing seats...")
@@ -816,14 +635,6 @@ def main():
     print("Fetching enterprise teams...")
     teams = fetch_enterprise_teams()
     print(f"Enterprise teams fetched: {len(teams)}")
-
-    # If a single team slug filter is set, narrow down to that team only
-    if TEAM_SLUG_FILTER:
-        teams = [t for t in teams if (t.get("slug") or t.get("team_slug") or "").strip().lower() == TEAM_SLUG_FILTER]
-        if not teams:
-            print(f"[WARN] No team matched the TEAM_SLUG filter '{TEAM_SLUG_FILTER}'. Exiting.")
-            return
-        print(f"Filtered to {len(teams)} team(s) matching TEAM_SLUG='{TEAM_SLUG_FILTER}'")
 
     # 5) Build output rows (REMOVED columns: team_slug, scim_userName, copilot_status, seat_created_at, seat_updated_at)
     rows_out: List[Dict[str, Any]] = []
@@ -846,9 +657,6 @@ def main():
             scim = scim_lookup(scim_index, login)
             if not scim:
                 no_scim_match += 1
-                # For non-EMU enterprises fall back to the GitHub users API for the display name.
-                if not scim_available:
-                    scim = fetch_github_user_info(login)
 
             seat = seats_by_login.get(login)
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
@@ -903,40 +711,6 @@ def main():
         w.writerows(rows_out)
 
     print(f"CSV report generated: {OUTPUT_CSV}")
-
-    # 6) Email per-team reports to team heads
-    if EMAIL_ENABLED:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        # Group rows by team
-        rows_by_team: Dict[str, List[Dict[str, Any]]] = {}
-        team_name_for_slug: Dict[str, str] = {}
-        for row in rows_out:
-            t_name = row.get("team_name", "")
-            # Derive slug key from team name for lookup (lowercase, replace spaces with hyphens)
-            t_slug = re.sub(r"[^a-z0-9]+", "-", t_name.lower()).strip("-")
-            rows_by_team.setdefault(t_slug, []).append(row)
-            team_name_for_slug[t_slug] = t_name
-
-        sent = 0
-        for t_slug, t_rows in rows_by_team.items():
-            t_name = team_name_for_slug.get(t_slug, t_slug)
-            recipient = resolve_team_email(t_name, t_slug)
-            if not recipient:
-                print(f"[EMAIL] No recipient configured for team '{t_name}' (slug: {t_slug}), skipping.")
-                continue
-            csv_content = build_team_csv_content(t_rows, fieldnames)
-            try:
-                send_team_report_email(recipient, t_name, csv_content, date_str)
-                sent += 1
-            except Exception as exc:
-                print(f"[EMAIL] Failed to send report for team '{t_name}' to {recipient}: {exc}")
-
-        print(f"[EMAIL] {sent} team report(s) emailed successfully.")
-    else:
-        if TEAM_EMAILS_RAW:
-            print("[EMAIL] Email sending is disabled. Ensure SMTP_HOST and SENDER_EMAIL are set.")
-        else:
-            print("[EMAIL] No TEAM_EMAILS configured; skipping email delivery.")
 
 if __name__ == "__main__":
     main()
