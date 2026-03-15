@@ -906,6 +906,7 @@ def main():
     date_str = datetime.now().strftime("%Y%m%d")
     total_rows = 0
     total_no_scim = 0
+    total_no_email = 0
 
     # Accumulator used only in combined (non-filtered) mode.
     combined_rows: List[Dict[str, Any]] = []
@@ -921,6 +922,7 @@ def main():
 
         team_rows: List[Dict[str, Any]] = []
         no_scim_match = 0
+        no_email_count = 0
 
         for m in memberships:
             login = parse_membership_login(m)
@@ -928,23 +930,51 @@ def main():
                 continue
 
             scim = scim_lookup(scim_index, login)
+            seat = seats_by_login.get(login)
+
             if not scim:
                 no_scim_match += 1
-                # Fall back to the GitHub users API for name/email.
-                # This covers both non-EMU enterprises (where SCIM is never
-                # available) and EMU enterprises where a specific user is not
-                # matched in the SCIM index (e.g. incomplete SCIM sync).
-                scim = fetch_github_user_info(login)
+                # Prefer name/email already present in the Copilot billing seat's
+                # assignee object (it is fetched in bulk and contains the user's
+                # GitHub profile name and public email).  This avoids one extra
+                # per-user API call for every seat holder.
+                seat_assignee = seat.get("assignee") if seat else None
+                seat_assignee = seat_assignee if isinstance(seat_assignee, dict) else {}
+                seat_name = str(seat_assignee.get("name") or "").strip()
+                seat_email = str(seat_assignee.get("email") or "").strip()
 
-            seat = seats_by_login.get(login)
+                if seat_name or seat_email:
+                    scim = {"name": seat_name, "email": seat_email}
+                else:
+                    # No inline data available – fall back to GitHub users API.
+                    # This covers non-EMU enterprises where the user has no seat,
+                    # and EMU enterprises with an incomplete SCIM sync.
+                    scim = fetch_github_user_info(login)
+
+                # If the seat assignee had a name but no email, try the GitHub
+                # users API to fill the gap.  Results are cached in _gh_user_cache,
+                # so this call is free if we already fetched this user earlier.
+                if scim and not scim.get("email"):
+                    gh_info = fetch_github_user_info(login)
+                    if gh_info.get("email"):
+                        scim = {
+                            "name": scim.get("name") or gh_info.get("name", ""),
+                            "email": gh_info["email"],
+                        }
+
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
+
+            user_name = (scim or {}).get("name", "")
+            user_email = (scim or {}).get("email", "")
+            if not user_email:
+                no_email_count += 1
 
             base = {
                 "enterprise": ENTERPRISE_SLUG,
                 "team_name": team_name,
                 "login": login,
-                "name": (scim or {}).get("name", ""),
-                "email": (scim or {}).get("email", ""),
+                "name": user_name,
+                "email": user_email,
                 "copilot_assigned": "yes" if seat else "no",
                 "plan_type": (seat or {}).get("plan_type", "") if seat else "",
                 "last_activity_at": (seat or {}).get("last_activity_at", "") if seat else "",
@@ -956,6 +986,7 @@ def main():
 
         total_rows += len(team_rows)
         total_no_scim += no_scim_match
+        total_no_email += no_email_count
 
         if ENTERPRISE_TEAM_SLUGS:
             # Write a separate CSV report for this team.
@@ -968,7 +999,7 @@ def main():
                 w.writeheader()
                 w.writerows(team_rows)
             print(f"  -> {len(team_rows)} rows written to {team_csv} "
-                  f"(SCIM misses: {no_scim_match})")
+                  f"(SCIM misses: {no_scim_match}, missing email: {no_email_count})")
             # Email the report to the team head (TEAM{i}_HEAD_EMAIL).
             recipient = get_team_head_email(i)
             send_report_email(recipient, team_csv, team_name, date_str)
@@ -976,7 +1007,15 @@ def main():
             combined_rows.extend(team_rows)
 
     print(f"Total rows (team-user): {total_rows}")
-    print(f"Users with no SCIM match (email/name blank): {total_no_scim}")
+    print(f"Users with no SCIM match: {total_no_scim}")
+    print(f"Users with no email resolved: {total_no_email}")
+    if total_no_email and not scim_available:
+        print(
+            "[INFO] Some emails are blank because this is a non-EMU enterprise and those "
+            "users have not set a publicly-visible email on their GitHub profile. "
+            "For complete email coverage, use an EMU (Enterprise Managed Users) enterprise "
+            "or ask affected users to set a public email in their GitHub profile settings."
+        )
 
     if not ENTERPRISE_TEAM_SLUGS:
         # Original behaviour: single combined CSV.
