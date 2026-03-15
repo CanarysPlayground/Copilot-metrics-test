@@ -32,6 +32,18 @@ jobs:
           # Comma-separated list of team slugs to process (each gets its own CSV).
           # Leave empty to process all teams into a single combined CSV.
           ENTERPRISE_TEAM_SLUGS: ${{ secrets.ENTERPRISE_TEAM_SLUGS }}
+          # SMTP settings for sending reports by email.
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          # Team head email addresses (position matches order in ENTERPRISE_TEAM_SLUGS).
+          TEAM1_HEAD_EMAIL: ${{ secrets.TEAM1_HEAD_EMAIL }}
+          TEAM2_HEAD_EMAIL: ${{ secrets.TEAM2_HEAD_EMAIL }}
+          TEAM3_HEAD_EMAIL: ${{ secrets.TEAM3_HEAD_EMAIL }}
+          TEAM4_HEAD_EMAIL: ${{ secrets.TEAM4_HEAD_EMAIL }}
+          TEAM5_HEAD_EMAIL: ${{ secrets.TEAM5_HEAD_EMAIL }}
         run: python enterprise_team_copilot_combined_report.py
 
       - name: Upload CSV report as artifact
