@@ -3,8 +3,13 @@ import csv
 import time
 import json
 import re
+import smtplib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional, Set
 
 import requests
@@ -35,6 +40,16 @@ LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 # Debug for metrics report parsing
 DEBUG = os.getenv("DEBUG_JSON", "0") == "1"
 DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
+
+# -------------------------
+# Email / SMTP configuration
+# -------------------------
+# All settings are optional; if any required setting is absent, email is skipped.
+SMTP_SERVER = os.getenv("SMTP_SERVER", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
 
 if not GITHUB_TOKEN:
     raise SystemExit("Missing GITHUB_TOKEN in environment (.env).")
@@ -663,6 +678,87 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     }
 
 # -------------------------
+# Email helpers
+# -------------------------
+def get_team_head_email(team_index: int) -> str:
+    """Return the head email for the 1-based team index.
+
+    Reads ``TEAM{team_index}_HEAD_EMAIL`` from the environment
+    (e.g. ``TEAM1_HEAD_EMAIL``, ``TEAM2_HEAD_EMAIL``, …).
+    The index is not capped – any positive integer is valid as long as the
+    corresponding secret is configured.
+    Returns an empty string when the variable is not set.
+    """
+    return os.getenv(f"TEAM{team_index}_HEAD_EMAIL", "").strip()
+
+
+def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str) -> None:
+    """Send the team CSV report as an email attachment.
+
+    Silently skips when any required SMTP setting is missing or *to_addr* is
+    empty.  Errors during sending are logged as warnings so they never abort
+    the overall report generation.
+    """
+    if not to_addr:
+        print(f"  [INFO] No recipient email configured for team '{team_name}' – skipping email.")
+        return
+
+    missing = [
+        name
+        for name, val in [
+            ("SMTP_SERVER", SMTP_SERVER),
+            ("SMTP_USERNAME", SMTP_USERNAME),
+            ("SMTP_PASSWORD", SMTP_PASSWORD),
+            ("SENDER_EMAIL", SENDER_EMAIL),
+        ]
+        if not val
+    ]
+    if missing:
+        print(
+            f"  [WARN] Email skipped for team '{team_name}': "
+            f"missing SMTP setting(s): {', '.join(missing)}"
+        )
+        return
+
+    subject = f"Copilot Metrics Report – {team_name} ({date_str})"
+    body = (
+        f"Hi,\n\n"
+        f"Please find attached the Copilot metrics report for team '{team_name}' "
+        f"generated on {date_str}.\n\n"
+        f"This report is auto-generated and sent daily.\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    with open(csv_path, "rb") as fh:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(fh.read())
+    encoders.encode_base64(part)
+    part.add_header(
+        "Content-Disposition",
+        f'attachment; filename="{os.path.basename(csv_path)}"',
+    )
+    msg.attach(part)
+
+    try:
+        import ssl
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls(context=ctx)
+            server.ehlo()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(SENDER_EMAIL, to_addr, msg.as_string())
+        print(f"  -> Email sent to {to_addr}")
+    except (smtplib.SMTPException, OSError) as exc:
+        print(f"  [ERROR] Failed to send email to '{to_addr}' for team '{team_name}': {exc}")
+
+
+# -------------------------
 # Main
 # -------------------------
 def main():
@@ -867,6 +963,9 @@ def main():
                 w.writerows(team_rows)
             print(f"  -> {len(team_rows)} rows written to {team_csv} "
                   f"(SCIM misses: {no_scim_match})")
+            # Email the report to the team head (TEAM{i}_HEAD_EMAIL).
+            recipient = get_team_head_email(i)
+            send_report_email(recipient, team_csv, team_name, date_str)
         else:
             combined_rows.extend(team_rows)
 
