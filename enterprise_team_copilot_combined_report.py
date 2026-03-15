@@ -297,10 +297,13 @@ def scim_lookup(scim_index: Dict[str, Dict[str, str]], login: str) -> Dict[str, 
 _gh_user_cache: Dict[str, Dict[str, str]] = {}
 
 def fetch_github_user_info(login: str) -> Dict[str, str]:
-    """Fetch display name for a GitHub login via the public users API.
+    """Fetch display name and public email for a GitHub login via the users API.
 
-    Email is intentionally omitted here because most GitHub users keep their
-    email private; callers should not rely on it being populated.
+    For EMU enterprises this is only called when the SCIM lookup fails to match
+    a user (e.g. incomplete SCIM sync).  For non-EMU enterprises it is the
+    primary source of name/email data.  The ``email`` field is populated when
+    the user has set a publicly-visible email on their GitHub profile; it is
+    left as an empty string when the profile email is private or unset.
     Falls back gracefully on any error.
     """
     if not login:
@@ -318,7 +321,8 @@ def fetch_github_user_info(login: str) -> Dict[str, str]:
         resp.raise_for_status()
         data = resp.json() or {}
         name = str(data.get("name") or "").strip()
-        result = {"name": name, "email": ""}
+        email = str(data.get("email") or "").strip()
+        result = {"name": name, "email": email}
         _gh_user_cache[key] = result
         return result
     except requests.exceptions.RequestException as exc:
@@ -778,7 +782,7 @@ def main():
     scim_available = bool(scim_users)
     print(f"SCIM users fetched: {len(scim_users)}; SCIM index keys: {len(scim_index)}")
     if not scim_available:
-        print("[INFO] SCIM not available – will fall back to GitHub users API for display names.")
+        print("[INFO] SCIM not available – will fall back to GitHub users API for display names and public emails.")
 
     # 2) Copilot seats (billing)
     print("Fetching Copilot billing seats...")
@@ -926,9 +930,11 @@ def main():
             scim = scim_lookup(scim_index, login)
             if not scim:
                 no_scim_match += 1
-                # For non-EMU enterprises fall back to the GitHub users API for the display name.
-                if not scim_available:
-                    scim = fetch_github_user_info(login)
+                # Fall back to the GitHub users API for name/email.
+                # This covers both non-EMU enterprises (where SCIM is never
+                # available) and EMU enterprises where a specific user is not
+                # matched in the SCIM index (e.g. incomplete SCIM sync).
+                scim = fetch_github_user_info(login)
 
             seat = seats_by_login.get(login)
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
