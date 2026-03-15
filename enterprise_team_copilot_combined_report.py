@@ -110,8 +110,9 @@ def fetch_all_scim_users():
     """Fetch all SCIM users for the enterprise.
 
     Returns an empty list (with a warning) when the enterprise does not support
-    SCIM (e.g. non-EMU accounts return 404/501). The rest of the pipeline
-    continues and falls back to the GitHub users API for display names.
+    SCIM (e.g. non-EMU accounts return 404/501) or when the token lacks SCIM
+    permission (401/403). The rest of the pipeline continues and falls back to
+    the GitHub users API for display names.
     """
     url = f"{API_BASE}/scim/v2/enterprises/{ENTERPRISE_SLUG}/Users"
 
@@ -122,11 +123,11 @@ def fetch_all_scim_users():
     while True:
         resp = gh_get(url, headers=HEADERS_SCIM, params={"startIndex": start_index, "count": count})
 
-        if resp.status_code in (404, 501):
+        if resp.status_code in (401, 403, 404, 501):
             print(
                 f"[WARN] SCIM endpoint returned {resp.status_code} – enterprise '{ENTERPRISE_SLUG}' "
-                "does not appear to use Enterprise Managed Users (EMU). "
-                "Name/email fields will be populated from the GitHub users API instead."
+                "does not appear to use Enterprise Managed Users (EMU), or the token lacks SCIM "
+                "permission. Name/email fields will be populated from the GitHub users API instead."
             )
             return []
 
