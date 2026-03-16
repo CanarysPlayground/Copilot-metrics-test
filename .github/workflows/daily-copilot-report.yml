@@ -38,7 +38,24 @@ jobs:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
-          # Team head email addresses (position matches order in ENTERPRISE_TEAM_SLUGS).
+          # Team head email addresses – two naming schemes are supported.
+          #
+          # Scheme 1 (preferred): slug-derived name.
+          # Derive the secret name from the team slug by uppercasing and replacing
+          # hyphens/special characters with underscores, then appending _TEAM_EMAIL.
+          # Examples:
+          #   slug "accelerator-copilot"  →  ACCELERATOR_COPILOT_TEAM_EMAIL
+          #   slug "delivery-copilot"     →  DELIVERY_COPILOT_TEAM_EMAIL
+          # Add one entry per team; the script picks the right one automatically.
+          ACCELERATOR_COPILOT_TEAM_EMAIL: ${{ secrets.ACCELERATOR_COPILOT_TEAM_EMAIL }}
+          DELIVERY_COPILOT_TEAM_EMAIL: ${{ secrets.DELIVERY_COPILOT_TEAM_EMAIL }}
+          NT_COPILOT_TEAM_EMAIL: ${{ secrets.NT_COPILOT_TEAM_EMAIL }}
+          NSG_COPILOT_TEAM_EMAIL: ${{ secrets.NSG_COPILOT_TEAM_EMAIL }}
+          GENESIS_COPILOT_TEAM_EMAIL: ${{ secrets.GENESIS_COPILOT_TEAM_EMAIL }}
+          PDG_COPILOT_TEAM_EMAIL: ${{ secrets.PDG_COPILOT_TEAM_EMAIL }}
+          #
+          # Scheme 2 (legacy / fallback): positional name.
+          # Position matches the order of teams in ENTERPRISE_TEAM_SLUGS.
           # Each secret may contain a single address OR a comma-separated list of
           # addresses – the report is delivered to every address in the list.
           # Example: "alice@example.com, bob@example.com"

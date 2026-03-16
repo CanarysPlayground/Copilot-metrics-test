@@ -684,18 +684,45 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
 # -------------------------
 # Email helpers
 # -------------------------
-def get_team_head_email(team_index: int) -> str:
-    """Return the head email(s) for the 1-based team index.
+def slug_to_env_name(team_slug: str) -> str:
+    """Convert a team slug to the corresponding env-var name for the team email.
 
-    Reads ``TEAM{team_index}_HEAD_EMAIL`` from the environment
-    (e.g. ``TEAM1_HEAD_EMAIL``, ``TEAM2_HEAD_EMAIL``, …).
+    The enterprise namespace prefix (the part before the first ``:``) is stripped
+    because GitHub enterprise team slugs are sometimes prefixed with the enterprise
+    name (e.g. ``ent:accelerator-copilot``).  Only the local part after the colon
+    is used so that the secret name remains stable regardless of the enterprise slug.
+
+    Examples::
+
+        "accelerator-copilot"      →  "ACCELERATOR_COPILOT_TEAM_EMAIL"
+        "nt-copilot"               →  "NT_COPILOT_TEAM_EMAIL"
+        "ent:genesis-copilot"      →  "GENESIS_COPILOT_TEAM_EMAIL"
+    """
+    local_slug = team_slug.split(":", 1)[-1] if ":" in team_slug else team_slug
+    return re.sub(r"[^A-Z0-9]+", "_", local_slug.upper()).strip("_") + "_TEAM_EMAIL"
+
+
+def get_team_head_email(team_index: int, team_slug: str = "") -> str:
+    """Return the head email(s) for the given team.
+
+    Lookup strategy (first non-empty value wins):
+
+    1. ``{SLUG_UPPER}_TEAM_EMAIL`` – slug-derived name, e.g.
+       ``ACCELERATOR_COPILOT_TEAM_EMAIL`` for slug ``accelerator-copilot``.
+       See :func:`slug_to_env_name` for the conversion rules.
+    2. ``TEAM{team_index}_HEAD_EMAIL`` – legacy positional name
+       (e.g. ``TEAM1_HEAD_EMAIL``, ``TEAM2_HEAD_EMAIL``, …).
+
     The value may be a single address or a comma-separated list of addresses
     (e.g. ``"alice@example.com, bob@example.com"``); the raw string is returned
     as-is and ``send_report_email`` handles splitting and validation.
-    The index is not capped – any positive integer is valid as long as the
-    corresponding secret is configured.
-    Returns an empty string when the variable is not set.
+    Returns an empty string when neither variable is set.
     """
+    if team_slug:
+        value = os.getenv(slug_to_env_name(team_slug), "").strip()
+        if value:
+            return value
+    # Fall back to positional env var for backward compatibility.
     return os.getenv(f"TEAM{team_index}_HEAD_EMAIL", "").strip()
 
 
@@ -1017,8 +1044,8 @@ def main():
                 w.writerows(team_rows)
             print(f"  -> {len(team_rows)} rows written to {team_csv} "
                   f"(SCIM misses: {no_scim_match}, missing email: {no_email_count})")
-            # Email the report to the team head (TEAM{i}_HEAD_EMAIL).
-            recipient = get_team_head_email(i)
+            # Email the report to the team head (slug-based or TEAM{i}_HEAD_EMAIL).
+            recipient = get_team_head_email(i, team_slug)
             send_report_email(recipient, team_csv, team_name, date_str)
         else:
             combined_rows.extend(team_rows)
