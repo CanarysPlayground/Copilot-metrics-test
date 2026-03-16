@@ -39,11 +39,17 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           # Team head email addresses (position matches order in ENTERPRISE_TEAM_SLUGS).
+          # Add TEAM{N}_HEAD_EMAIL secrets in your repository for as many teams as needed.
           TEAM1_HEAD_EMAIL: ${{ secrets.TEAM1_HEAD_EMAIL }}
           TEAM2_HEAD_EMAIL: ${{ secrets.TEAM2_HEAD_EMAIL }}
           TEAM3_HEAD_EMAIL: ${{ secrets.TEAM3_HEAD_EMAIL }}
           TEAM4_HEAD_EMAIL: ${{ secrets.TEAM4_HEAD_EMAIL }}
           TEAM5_HEAD_EMAIL: ${{ secrets.TEAM5_HEAD_EMAIL }}
+          TEAM6_HEAD_EMAIL: ${{ secrets.TEAM6_HEAD_EMAIL }}
+          TEAM7_HEAD_EMAIL: ${{ secrets.TEAM7_HEAD_EMAIL }}
+          TEAM8_HEAD_EMAIL: ${{ secrets.TEAM8_HEAD_EMAIL }}
+          TEAM9_HEAD_EMAIL: ${{ secrets.TEAM9_HEAD_EMAIL }}
+          TEAM10_HEAD_EMAIL: ${{ secrets.TEAM10_HEAD_EMAIL }}
         run: python enterprise_team_copilot_combined_report.py
 
       - name: Upload CSV report as artifact
