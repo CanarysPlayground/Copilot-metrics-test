@@ -685,10 +685,13 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
 # Email helpers
 # -------------------------
 def get_team_head_email(team_index: int) -> str:
-    """Return the head email for the 1-based team index.
+    """Return the head email(s) for the 1-based team index.
 
     Reads ``TEAM{team_index}_HEAD_EMAIL`` from the environment
     (e.g. ``TEAM1_HEAD_EMAIL``, ``TEAM2_HEAD_EMAIL``, …).
+    The value may be a single address or a comma-separated list of addresses
+    (e.g. ``"alice@example.com, bob@example.com"``); the raw string is returned
+    as-is and ``send_report_email`` handles splitting and validation.
     The index is not capped – any positive integer is valid as long as the
     corresponding secret is configured.
     Returns an empty string when the variable is not set.
@@ -699,11 +702,25 @@ def get_team_head_email(team_index: int) -> str:
 def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str) -> None:
     """Send the team CSV report as an email attachment.
 
+    *to_addr* may contain a single address or multiple comma-separated
+    addresses (e.g. ``"alice@example.com, bob@example.com"``).  The report is
+    delivered to every address in the list.
+
     Silently skips when any required SMTP setting is missing or *to_addr* is
     empty.  Errors during sending are logged as warnings so they never abort
     the overall report generation.
     """
-    if not to_addr:
+    # Support multiple comma-separated recipients; skip any malformed addresses.
+    recipients = [addr.strip() for addr in to_addr.split(",") if addr.strip()]
+    valid_recipients = [addr for addr in recipients if "@" in addr]
+    invalid = [addr for addr in recipients if "@" not in addr]
+    if invalid:
+        print(
+            f"  [WARN] Skipping malformed recipient address(es) for team '{team_name}': "
+            f"{', '.join(invalid)}"
+        )
+    recipients = valid_recipients
+    if not recipients:
         print(f"  [INFO] No recipient email configured for team '{team_name}' – skipping email.")
         return
 
@@ -734,7 +751,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
 
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
-    msg["To"] = to_addr
+    msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
@@ -756,10 +773,10 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
             server.starttls(context=ctx)
             server.ehlo()
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SENDER_EMAIL, to_addr, msg.as_string())
-        print(f"  -> Email sent to {to_addr}")
+            server.sendmail(SENDER_EMAIL, recipients, msg.as_string())
+        print(f"  -> Email sent to {', '.join(recipients)}")
     except (smtplib.SMTPException, OSError) as exc:
-        print(f"  [ERROR] Failed to send email to '{to_addr}' for team '{team_name}': {exc}")
+        print(f"  [ERROR] Failed to send email to '{', '.join(recipients)}' for team '{team_name}': {exc}")
 
 
 # -------------------------
