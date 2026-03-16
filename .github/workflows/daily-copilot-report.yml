@@ -2,10 +2,8 @@ name: Daily Copilot Metrics Report
 
 on:
   schedule:
-    # Runs every day at 05:00 UTC (scheduled ahead of 06:00 UTC to account for
-    # GitHub Actions queuing delays, which are typically 30-80 minutes at the
-    # top of the hour due to high runner demand).
-    - cron: "0 5 * * *"
+    # Runs every day at 02:00 UTC
+    - cron: "0 2 * * *"
   workflow_dispatch:
 
 jobs:
