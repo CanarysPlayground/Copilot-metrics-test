@@ -685,10 +685,13 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
 # Email helpers
 # -------------------------
 def get_team_head_email(team_index: int) -> str:
-    """Return the head email for the 1-based team index.
+    """Return the head email(s) for the 1-based team index.
 
     Reads ``TEAM{team_index}_HEAD_EMAIL`` from the environment
     (e.g. ``TEAM1_HEAD_EMAIL``, ``TEAM2_HEAD_EMAIL``, …).
+    The value may be a single address or a comma-separated list of addresses
+    (e.g. ``"alice@example.com, bob@example.com"``); the raw string is returned
+    as-is and ``send_report_email`` handles splitting and validation.
     The index is not capped – any positive integer is valid as long as the
     corresponding secret is configured.
     Returns an empty string when the variable is not set.

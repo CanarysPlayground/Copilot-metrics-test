@@ -39,6 +39,9 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           # Team head email addresses (position matches order in ENTERPRISE_TEAM_SLUGS).
+          # Each secret may contain a single address OR a comma-separated list of
+          # addresses – the report is delivered to every address in the list.
+          # Example: "alice@example.com, bob@example.com"
           # Add TEAM{N}_HEAD_EMAIL secrets in your repository for as many teams as needed.
           TEAM1_HEAD_EMAIL: ${{ secrets.TEAM1_HEAD_EMAIL }}
           TEAM2_HEAD_EMAIL: ${{ secrets.TEAM2_HEAD_EMAIL }}
