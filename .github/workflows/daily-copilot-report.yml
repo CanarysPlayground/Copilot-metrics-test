@@ -33,11 +33,21 @@ jobs:
           # Leave empty to process all teams into a single combined CSV.
           ENTERPRISE_TEAM_SLUGS: ${{ secrets.ENTERPRISE_TEAM_SLUGS }}
           # SMTP settings for sending reports by email.
+          # These are used for basic SMTP authentication (not compatible with MFA).
+          # If your Microsoft 365 tenant has MFA enabled, use the OAuth2 settings below instead.
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          # OAuth2 / Microsoft Graph API settings (recommended for MFA-enabled accounts).
+          # When all three are set, email is sent via the Graph API instead of SMTP,
+          # bypassing the MFA / legacy-auth restriction (error 5.7.139).
+          # Setup: register an Azure App, grant it Mail.Send (application permission),
+          # obtain admin consent, then store the values as repository secrets.
+          SMTP_OAUTH2_CLIENT_ID: ${{ secrets.SMTP_OAUTH2_CLIENT_ID }}
+          SMTP_OAUTH2_CLIENT_SECRET: ${{ secrets.SMTP_OAUTH2_CLIENT_SECRET }}
+          SMTP_OAUTH2_TENANT_ID: ${{ secrets.SMTP_OAUTH2_TENANT_ID }}
           # Team head email addresses – two naming schemes are supported.
           #
           # Scheme 1 (preferred): slug-derived name.
