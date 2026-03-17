@@ -1,5 +1,4 @@
 import os
-import base64
 import csv
 import time
 import json
@@ -12,7 +11,6 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any, Dict, List, Optional, Set
-from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -52,26 +50,6 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587") or "587")
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
-
-# -------------------------
-# OAuth2 / Microsoft Graph API configuration (for MFA-enabled accounts)
-# -------------------------
-# When all three variables below are set the script sends email via the
-# Microsoft Graph API using the OAuth2 client-credentials flow instead of
-# plain SMTP auth.  This is the recommended approach for Microsoft 365
-# tenants where Multi-Factor Authentication (MFA) or modern-auth-only
-# policies are enforced and basic SMTP authentication is therefore blocked
-# (error 5.7.139 "Authentication unsuccessful").
-#
-# How to set this up:
-#   1. Register an App in Azure Active Directory (Entra ID).
-#   2. Grant it the *application* permission "Mail.Send" (not delegated).
-#   3. Have an admin grant tenant-wide consent for the permission.
-#   4. Create a client secret and copy its value into SMTP_OAUTH2_CLIENT_SECRET.
-#   5. Set SENDER_EMAIL to the mailbox the app is allowed to send from.
-SMTP_OAUTH2_CLIENT_ID = os.getenv("SMTP_OAUTH2_CLIENT_ID", "").strip()
-SMTP_OAUTH2_CLIENT_SECRET = os.getenv("SMTP_OAUTH2_CLIENT_SECRET", "").strip()
-SMTP_OAUTH2_TENANT_ID = os.getenv("SMTP_OAUTH2_TENANT_ID", "").strip()
 
 if not GITHUB_TOKEN:
     raise SystemExit("Missing GITHUB_TOKEN in environment (.env).")
@@ -748,73 +726,6 @@ def get_team_head_email(team_index: int, team_slug: str = "") -> str:
     return os.getenv(f"TEAM{team_index}_HEAD_EMAIL", "").strip()
 
 
-def _get_oauth2_token() -> str:
-    """Obtain an OAuth2 access token via the client-credentials flow.
-
-    Raises ``ValueError`` if ``SMTP_OAUTH2_TENANT_ID`` is not a valid GUID.
-    Raises ``requests.HTTPError`` if the token endpoint returns an error.
-    """
-    _GUID_RE = re.compile(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        re.IGNORECASE,
-    )
-    if not _GUID_RE.match(SMTP_OAUTH2_TENANT_ID):
-        raise ValueError(
-            f"SMTP_OAUTH2_TENANT_ID does not look like a valid GUID: {SMTP_OAUTH2_TENANT_ID!r}"
-        )
-    url = f"https://login.microsoftonline.com/{SMTP_OAUTH2_TENANT_ID}/oauth2/v2.0/token"
-    resp = requests.post(
-        url,
-        data={
-            "client_id": SMTP_OAUTH2_CLIENT_ID,
-            "client_secret": SMTP_OAUTH2_CLIENT_SECRET,
-            "scope": "https://graph.microsoft.com/.default",
-            "grant_type": "client_credentials",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return str(resp.json()["access_token"])
-
-
-def _send_email_via_graph(recipients: List[str], subject: str, body: str, csv_path: str) -> None:
-    """Send *csv_path* as an attachment using the Microsoft Graph API.
-
-    Uses the OAuth2 client-credentials token obtained by :func:`_get_oauth2_token`.
-    The sending mailbox is ``SENDER_EMAIL``.
-
-    Raises ``requests.HTTPError`` on API errors.
-    """
-    with open(csv_path, "rb") as fh:
-        attachment_bytes = base64.b64encode(fh.read()).decode("ascii")
-
-    payload = {
-        "message": {
-            "subject": subject,
-            "body": {"contentType": "text", "content": body},
-            "toRecipients": [{"emailAddress": {"address": addr}} for addr in recipients],
-            "attachments": [
-                {
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": os.path.basename(csv_path),
-                    "contentType": "text/csv",
-                    "contentBytes": attachment_bytes,
-                }
-            ],
-        }
-    }
-
-    token = _get_oauth2_token()
-    url = f"https://graph.microsoft.com/v1.0/users/{quote(SENDER_EMAIL)}/sendMail"
-    resp = requests.post(
-        url,
-        json=payload,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        timeout=60,
-    )
-    resp.raise_for_status()
-
-
 def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str) -> None:
     """Send the team CSV report as an email attachment.
 
@@ -822,17 +733,10 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
     addresses (e.g. ``"alice@example.com, bob@example.com"``).  The report is
     delivered to every address in the list.
 
-    **Authentication modes** (first applicable wins):
+    Uses SMTP STARTTLS with username/password authentication (``SMTP_SERVER``,
+    ``SMTP_USERNAME``, ``SMTP_PASSWORD``, ``SENDER_EMAIL``).
 
-    1. **OAuth2 / Microsoft Graph API** – used when
-       ``SMTP_OAUTH2_CLIENT_ID``, ``SMTP_OAUTH2_CLIENT_SECRET`` and
-       ``SMTP_OAUTH2_TENANT_ID`` are all set.  This mode works with
-       Microsoft 365 tenants that enforce MFA or have disabled legacy
-       SMTP basic-auth.
-    2. **SMTP basic auth** – the original mode using ``SMTP_SERVER``,
-       ``SMTP_USERNAME``, ``SMTP_PASSWORD`` and ``SENDER_EMAIL``.
-
-    Silently skips when neither mode is fully configured or *to_addr* is
+    Silently skips when the required SMTP settings are absent or *to_addr* is
     empty.  Errors during sending are logged as warnings so they never abort
     the overall report generation.
     """
@@ -858,29 +762,6 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"This report is auto-generated and sent daily.\n"
     )
 
-    # ------------------------------------------------------------------
-    # Mode 1: OAuth2 via Microsoft Graph API (works with MFA / modern auth)
-    # ------------------------------------------------------------------
-    if SMTP_OAUTH2_CLIENT_ID and SMTP_OAUTH2_CLIENT_SECRET and SMTP_OAUTH2_TENANT_ID:
-        if not SENDER_EMAIL:
-            print(
-                f"  [WARN] Email skipped for team '{team_name}': "
-                "SENDER_EMAIL is required for OAuth2 / Graph API sending."
-            )
-            return
-        try:
-            _send_email_via_graph(recipients, subject, body, csv_path)
-            print(f"  -> Email sent to {', '.join(recipients)} (via Microsoft Graph API)")
-        except Exception as exc:
-            print(
-                f"  [ERROR] Failed to send email via Graph API to {', '.join(recipients)} "
-                f"for team '{team_name}': {exc}"
-            )
-        return
-
-    # ------------------------------------------------------------------
-    # Mode 2: SMTP basic auth (legacy – not compatible with MFA)
-    # ------------------------------------------------------------------
     missing = [
         name
         for name, val in [
