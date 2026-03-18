@@ -10,7 +10,7 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -31,8 +31,23 @@ OUTPUT_CSV = os.getenv("OUTPUT_CSV") or f"enterprise_team_users_copilot_combined
 # Optional: comma-separated list of team slugs to process (e.g. "team-a,team-b,team-c").
 # When set, only those teams are processed and each team gets its own CSV report.
 # When unset, all enterprise teams are processed and written to OUTPUT_CSV.
+#
+# Use a pipe (|) within an entry to merge multiple teams into one combined report.
+# Example: "delivery-copilot|accelerator-copilot,nt-copilot"
+#   → one combined CSV for delivery-copilot + accelerator-copilot (rows deduplicated by login)
+#   → one individual CSV for nt-copilot
+# When merging teams, both teams' email secrets (e.g. DELIVERY_COPILOT_TEAM_EMAIL and
+# ACCELERATOR_COPILOT_TEAM_EMAIL) are collected and used together as recipients.
 _raw_team_slugs = os.getenv("ENTERPRISE_TEAM_SLUGS", "").strip()
-ENTERPRISE_TEAM_SLUGS: List[str] = [s.strip() for s in _raw_team_slugs.split(",") if s.strip()] if _raw_team_slugs else []
+# Parse into groups: comma separates groups, pipe (|) separates teams within a group.
+ENTERPRISE_TEAM_SLUG_GROUPS: List[List[str]] = []
+if _raw_team_slugs:
+    for _grp in _raw_team_slugs.split(","):
+        _slugs = [s.strip() for s in _grp.split("|") if s.strip()]
+        if _slugs:
+            ENTERPRISE_TEAM_SLUG_GROUPS.append(_slugs)
+# Flat list of all individual slugs – used for team filtering and backward compatibility.
+ENTERPRISE_TEAM_SLUGS: List[str] = [s for grp in ENTERPRISE_TEAM_SLUG_GROUPS for s in grp]
 
 # Optional override if your suffix is not derived correctly from enterprise slug
 LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
@@ -816,9 +831,11 @@ def main():
     print(f"Enterprise: {ENTERPRISE_SLUG}")
     print(f"API_BASE: {API_BASE}")
     print(f"Derived login suffix token: {derive_suffix_token()} (override with LOGIN_SUFFIX env if needed)")
-    if ENTERPRISE_TEAM_SLUGS:
-        print(f"Filtering to {len(ENTERPRISE_TEAM_SLUGS)} team(s): {', '.join(ENTERPRISE_TEAM_SLUGS)}")
-        print(f"Each team will be written to its own CSV report.")
+    if ENTERPRISE_TEAM_SLUG_GROUPS:
+        group_strs = ["|".join(g) for g in ENTERPRISE_TEAM_SLUG_GROUPS]
+        print(f"Filtering to {len(ENTERPRISE_TEAM_SLUG_GROUPS)} group(s) "
+              f"({len(ENTERPRISE_TEAM_SLUGS)} team(s)): {', '.join(group_strs)}")
+        print(f"Each group will be written to its own CSV report.")
     else:
         print(f"Output: {OUTPUT_CSV}")
 
@@ -948,7 +965,7 @@ def main():
     ]
 
     # 5) Build output rows per team.
-    # When ENTERPRISE_TEAM_SLUGS is set, each team gets its own CSV file.
+    # When ENTERPRISE_TEAM_SLUG_GROUPS is set, teams are grouped and each group gets its own CSV.
     # Otherwise all teams are combined into OUTPUT_CSV (original behaviour).
     date_str = datetime.now().strftime("%Y%m%d")
     total_rows = 0
@@ -957,6 +974,9 @@ def main():
 
     # Accumulator used only in combined (non-filtered) mode.
     combined_rows: List[Dict[str, Any]] = []
+
+    # Per-team results collected for group-based output (used when ENTERPRISE_TEAM_SLUG_GROUPS is set).
+    per_team_results: Dict[str, Dict[str, Any]] = {}
 
     for i, t in enumerate(teams, start=1):
         team_name = (t.get("name") or t.get("display_name") or t.get("slug") or "").strip()
@@ -1035,21 +1055,15 @@ def main():
         total_no_scim += no_scim_match
         total_no_email += no_email_count
 
-        if ENTERPRISE_TEAM_SLUGS:
-            # Write a separate CSV report for this team.
-            # Strip the enterprise namespace prefix (e.g. "ent:admin" -> "admin") so the
-            # filename is "enterprise_team_admin_copilot_<date>.csv" rather than
-            # "enterprise_team_ent-admin_copilot_<date>.csv".
-            team_csv = f"enterprise_team_{_slug_local(team_slug)}_copilot_{date_str}.csv"
-            with open(team_csv, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames)
-                w.writeheader()
-                w.writerows(team_rows)
-            print(f"  -> {len(team_rows)} rows written to {team_csv} "
-                  f"(SCIM misses: {no_scim_match}, missing email: {no_email_count})")
-            # Email the report to the team head (slug-based or TEAM{i}_HEAD_EMAIL).
-            recipient = get_team_head_email(i, team_slug)
-            send_report_email(recipient, team_csv, team_name, date_str)
+        if ENTERPRISE_TEAM_SLUG_GROUPS:
+            # Collect team results for later group-based output.
+            per_team_results[team_slug] = {
+                "name": team_name,
+                "local_slug": _slug_local(team_slug),
+                "rows": team_rows,
+                "no_scim_match": no_scim_match,
+                "no_email_count": no_email_count,
+            }
         else:
             combined_rows.extend(team_rows)
 
@@ -1064,7 +1078,89 @@ def main():
             "or ask affected users to set a public email in their GitHub profile settings."
         )
 
-    if not ENTERPRISE_TEAM_SLUGS:
+    if ENTERPRISE_TEAM_SLUG_GROUPS:
+        # Group-based output: one CSV per group.  Teams within a group (pipe-separated in
+        # ENTERPRISE_TEAM_SLUGS) are merged into a single report with rows deduplicated by login.
+
+        def _find_team_result(requested_slug: str) -> Optional[Dict[str, Any]]:
+            """Find per_team_results entry matching the requested slug."""
+            req_lower = requested_slug.lower()
+            req_local = _slug_local(requested_slug)
+            req_norm = _normalize(requested_slug)
+            for actual_slug, data in per_team_results.items():
+                actual_local = _slug_local(actual_slug)
+                if (
+                    actual_slug.lower() == req_lower
+                    or actual_local.lower() == req_lower
+                    or actual_local.lower() == req_local.lower()
+                    or _normalize(actual_local) == req_norm
+                ):
+                    return data
+            return None
+
+        for group_idx, group_slugs in enumerate(ENTERPRISE_TEAM_SLUG_GROUPS, start=1):
+            # Gather team data for each slug in this group.
+            group_team_data: List[Tuple[str, Dict[str, Any]]] = []
+            for req_slug in group_slugs:
+                td = _find_team_result(req_slug)
+                if td:
+                    group_team_data.append((req_slug, td))
+
+            if not group_team_data:
+                print(f"[WARN] No team data found for group {group_idx}: {group_slugs} – skipping.")
+                continue
+
+            # Combine rows, deduplicating by login (first occurrence wins).
+            seen_logins: Set[str] = set()
+            group_rows: List[Dict[str, Any]] = []
+            for _, td in group_team_data:
+                for row in td["rows"]:
+                    if row["login"] not in seen_logins:
+                        seen_logins.add(row["login"])
+                        group_rows.append(row)
+
+            # Build CSV filename and display name.
+            local_slugs = [td["local_slug"] for _, td in group_team_data]
+            team_names_in_group = [td["name"] for _, td in group_team_data]
+            if len(local_slugs) > 1:
+                combined_slug_part = "_and_".join(local_slugs)
+                group_display_name = " + ".join(team_names_in_group)
+            else:
+                combined_slug_part = local_slugs[0]
+                group_display_name = team_names_in_group[0]
+
+            group_csv = f"enterprise_team_{combined_slug_part}_copilot_{date_str}.csv"
+            with open(group_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames)
+                w.writeheader()
+                w.writerows(group_rows)
+
+            group_no_scim = sum(td["no_scim_match"] for _, td in group_team_data)
+            group_no_email = sum(td["no_email_count"] for _, td in group_team_data)
+            print(
+                f"  -> {len(group_rows)} rows written to {group_csv} "
+                f"(SCIM misses: {group_no_scim}, missing email: {group_no_email})"
+            )
+
+            # Collect email recipients from all teams in the group.
+            # Slug-derived env vars take priority; TEAM{group_idx}_HEAD_EMAIL is the fallback.
+            all_recipients: List[str] = []
+            for req_slug, _ in group_team_data:
+                slug_email = os.getenv(slug_to_env_name(req_slug), "").strip()
+                if slug_email:
+                    for addr in slug_email.split(","):
+                        addr = addr.strip()
+                        if addr and addr not in all_recipients:
+                            all_recipients.append(addr)
+                else:
+                    fallback_email = os.getenv(f"TEAM{group_idx}_HEAD_EMAIL", "").strip()
+                    for addr in fallback_email.split(","):
+                        addr = addr.strip()
+                        if addr and addr not in all_recipients:
+                            all_recipients.append(addr)
+            send_report_email(", ".join(all_recipients), group_csv, group_display_name, date_str)
+
+    elif not ENTERPRISE_TEAM_SLUGS:
         # Original behaviour: single combined CSV.
         with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
