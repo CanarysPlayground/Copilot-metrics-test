@@ -31,6 +31,19 @@ jobs:
           ENTERPRISE_SLUG: ${{ secrets.ENTERPRISE_SLUG }}
           # Comma-separated list of team slugs to process (each gets its own CSV).
           # Leave empty to process all teams into a single combined CSV.
+          #
+          # Use pipe (|) within an entry to merge multiple teams into one combined report.
+          # Example: "delivery-copilot|accelerator-copilot,nt-copilot"
+          #   → one combined CSV for delivery-copilot + accelerator-copilot
+          #   → one individual CSV for nt-copilot
+          #
+          # Secret guidance for combined groups:
+          #   - No new secrets are required.
+          #   - Both teams' existing email secrets are used as recipients for the merged report.
+          #     e.g. DELIVERY_COPILOT_TEAM_EMAIL and ACCELERATOR_COPILOT_TEAM_EMAIL are both
+          #     collected and the report is sent to all addresses in both secrets.
+          #   - Make sure each team that should receive the combined report has its
+          #     <SLUG>_TEAM_EMAIL secret set (slug uppercased + hyphens → underscores + _TEAM_EMAIL).
           ENTERPRISE_TEAM_SLUGS: ${{ secrets.ENTERPRISE_TEAM_SLUGS }}
           # SMTP settings for sending reports by email.
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
