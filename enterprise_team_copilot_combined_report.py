@@ -594,6 +594,13 @@ def format_feature_name(raw: str) -> str:
     }
     return overrides.get(name, name)
 
+def format_language_loc(lang_dict: Dict[str, float]) -> str:
+    """Format per-language LOC counts as a human-readable string, e.g. 'java 260, python 56'."""
+    if not lang_dict:
+        return ""
+    sorted_items = sorted(lang_dict.items(), key=lambda kv: kv[1], reverse=True)
+    return ", ".join(f"{lang} {int(v)}" for lang, v in sorted_items if v > 0)
+
 @dataclass
 class UserAgg:
     user: str
@@ -611,6 +618,9 @@ class UserAgg:
     model_counts: Dict[str, float] = field(default_factory=dict)
     language_counts: Dict[str, float] = field(default_factory=dict)
     feature_counts: Dict[str, float] = field(default_factory=dict)
+
+    language_loc_suggested: Dict[str, float] = field(default_factory=dict)
+    language_loc_added: Dict[str, float] = field(default_factory=dict)
 
 def get_user_login_from_row(row: Dict[str, Any]) -> str:
     v = row.get("user_login")
@@ -724,12 +734,24 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if val == 0:
                     val = to_num(lf.get("code_generation_activity_count"))
                 agg.language_counts[lang] = agg.language_counts.get(lang, 0.0) + val
+                loc_sug = to_num(lf.get("loc_suggested_to_add_sum") if "loc_suggested_to_add_sum" in lf else lf.get("loc_suggested"))
+                loc_add = to_num(lf.get("loc_added_sum") if "loc_added_sum" in lf else lf.get("loc_added"))
+                if loc_sug:
+                    agg.language_loc_suggested[lang] = agg.language_loc_suggested.get(lang, 0.0) + loc_sug
+                if loc_add:
+                    agg.language_loc_added[lang] = agg.language_loc_added.get(lang, 0.0) + loc_add
         else:
             # Flat NDJSON format: language is a top-level field per row.
             lang = r.get("language")
             if isinstance(lang, str) and lang:
                 val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
                 agg.language_counts[lang] = agg.language_counts.get(lang, 0.0) + val
+                loc_sug = to_num(r.get("loc_suggested_to_add_sum") if "loc_suggested_to_add_sum" in r else r.get("loc_suggested"))
+                loc_add = to_num(r.get("loc_added_sum") if "loc_added_sum" in r else r.get("loc_added"))
+                if loc_sug:
+                    agg.language_loc_suggested[lang] = agg.language_loc_suggested.get(lang, 0.0) + loc_sug
+                if loc_add:
+                    agg.language_loc_added[lang] = agg.language_loc_added.get(lang, 0.0) + loc_add
 
         tbf = r.get("totals_by_feature")
         if isinstance(tbf, list):
@@ -771,6 +793,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
+            "metrics_loc_suggested_by_language_28d": "",
+            "metrics_loc_added_by_language_28d": "",
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
@@ -788,6 +812,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
+        "metrics_loc_suggested_by_language_28d": format_language_loc(agg.language_loc_suggested),
+        "metrics_loc_added_by_language_28d": format_language_loc(agg.language_loc_added),
     }
 
 # -------------------------
@@ -1092,6 +1118,8 @@ def main():
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
+        "metrics_loc_suggested_by_language_28d",
+        "metrics_loc_added_by_language_28d",
     ]
 
     # 5) Build output rows per team.
