@@ -626,16 +626,19 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
         agg.acceptances += to_num(r.get("code_acceptance_activity_count"))
 
         # Premium requests: check several candidate field names used across API versions.
+        # 'copilot_premium_requests' is the field used by the newer flat-report NDJSON format.
         premium_row = (
-            to_num(r.get("total_premium_requests_count"))
+            to_num(r.get("copilot_premium_requests"))
+            or to_num(r.get("total_premium_requests_count"))
             or to_num(r.get("premium_requests_count"))
             or to_num(r.get("premium_interaction_count"))
         )
         agg.premium_requests += premium_row
 
-        day = r.get("day")
+        # Day tracking: support both 'day' (nested format) and 'date' (flat NDJSON format).
+        day = r.get("day") or r.get("date")
         if isinstance(day, str) and day:
-            agg.days.add(day)
+            agg.days.add(day[:10])
 
         tmm = r.get("totals_by_model_feature")
         if isinstance(tmm, list):
@@ -648,9 +651,16 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 )
                 # Accumulate per-model premium request counts when top-level field is absent.
                 if not premium_row:
-                    agg.premium_requests += to_num(mf.get("premium_request_count")) + to_num(
-                        mf.get("premium_requests_count")
+                    agg.premium_requests += (
+                        to_num(mf.get("copilot_premium_requests"))
+                        or (to_num(mf.get("premium_request_count")) + to_num(mf.get("premium_requests_count")))
                     )
+        else:
+            # Flat NDJSON format: model is a top-level field per row.
+            model = r.get("model")
+            if isinstance(model, str) and model:
+                count = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
+                agg.model_counts[model] = agg.model_counts.get(model, 0.0) + count
 
         tlf = r.get("totals_by_language_feature")
         if isinstance(tlf, list):
@@ -661,6 +671,12 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 val = to_num(lf.get("user_initiated_interaction_count"))
                 if val == 0:
                     val = to_num(lf.get("code_generation_activity_count"))
+                agg.language_counts[lang] = agg.language_counts.get(lang, 0.0) + val
+        else:
+            # Flat NDJSON format: language is a top-level field per row.
+            lang = r.get("language")
+            if isinstance(lang, str) and lang:
+                val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
                 agg.language_counts[lang] = agg.language_counts.get(lang, 0.0) + val
 
         tbf = r.get("totals_by_feature")
@@ -676,6 +692,15 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_suggested += to_num(f.get("loc_suggested_to_add_sum"))
                 agg.loc_added += to_num(f.get("loc_added_sum"))
                 agg.loc_deleted += to_num(f.get("loc_deleted_sum"))
+        else:
+            # Flat NDJSON format: feature and LOC fields are top-level per row.
+            feat = r.get("feature")
+            if isinstance(feat, str) and feat:
+                val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
+                agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
+            agg.loc_suggested += to_num(r.get("loc_suggested_to_add_sum") if "loc_suggested_to_add_sum" in r else r.get("loc_suggested"))
+            agg.loc_added += to_num(r.get("loc_added_sum") if "loc_added_sum" in r else r.get("loc_added"))
+            agg.loc_deleted += to_num(r.get("loc_deleted_sum") if "loc_deleted_sum" in r else r.get("loc_deleted"))
 
     return users
 
