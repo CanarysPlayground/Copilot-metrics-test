@@ -63,6 +63,8 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g. `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g. `python`, `typescript`) |
 | `metrics_top_feature_28d` | The Copilot feature the user used most often (e.g. `Inline Chat`, `Agent`, `Ask`, `Edit`) |
+| `metrics_loc_suggested_by_language_28d` | Per-language breakdown of LOC suggested, sorted by volume descending (e.g. `python 1250, java 560, typescript 320`). See note below about `unknown` and `others` values |
+| `metrics_loc_added_by_language_28d` | Per-language breakdown of LOC added (accepted by the user), sorted by volume descending. See note below about `unknown` and `others` values |
 
 ---
 
@@ -83,6 +85,18 @@ For Chat, Edit, and Agent sessions, Copilot can generate and apply entire blocks
 **Example:** A developer uses Copilot Agent to scaffold a 200-line file. `loc_added` increases by 200, but `loc_suggested` may not increase at all because the agent applied the code directly without a ghost-text suggestion step.
 
 This means **`loc_added ≥ loc_suggested` is the norm for heavy Chat/Edit/Agent users**, and is not a data error.
+
+---
+
+## What are `unknown` and `others` in the per-language LOC columns?
+
+The `metrics_loc_suggested_by_language_28d` and `metrics_loc_added_by_language_28d` columns break down lines of code by the programming language detected by GitHub Copilot. Two special values can appear in this breakdown:
+
+- **`unknown`** — The GitHub API returned a `null` or missing `language` field for that activity entry. This typically occurs when Copilot is used in a file whose language cannot be detected (e.g. a plain-text scratch buffer, an unsaved file, or a file type not recognised by the language detector). The report preserves these as `unknown` rather than discarding them so the LOC totals remain accurate.
+
+- **`others`** — The GitHub API itself groups less common or unsupported languages under the label `others`. This is a server-side aggregation by GitHub; it is not applied by this report. It covers languages that are tracked by Copilot but not broken out individually in the API response.
+
+Neither value represents an error. The per-language totals (including `unknown` and `others`) will sum to the overall `metrics_loc_suggested_28d` / `metrics_loc_added_28d` figure for that user.
 
 ---
 
