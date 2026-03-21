@@ -587,6 +587,8 @@ class UserAgg:
     loc_added: float = 0.0
     loc_deleted: float = 0.0
 
+    premium_requests: float = 0.0
+
     model_counts: Dict[str, float] = field(default_factory=dict)
     language_counts: Dict[str, float] = field(default_factory=dict)
     feature_counts: Dict[str, float] = field(default_factory=dict)
@@ -623,6 +625,14 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
         agg.completions += to_num(r.get("code_generation_activity_count"))
         agg.acceptances += to_num(r.get("code_acceptance_activity_count"))
 
+        # Premium requests: check several candidate field names used across API versions.
+        premium_row = (
+            to_num(r.get("total_premium_requests_count"))
+            or to_num(r.get("premium_requests_count"))
+            or to_num(r.get("premium_interaction_count"))
+        )
+        agg.premium_requests += premium_row
+
         day = r.get("day")
         if isinstance(day, str) and day:
             agg.days.add(day)
@@ -636,6 +646,11 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.model_counts[model] = agg.model_counts.get(model, 0.0) + to_num(
                     mf.get("user_initiated_interaction_count")
                 )
+                # Accumulate per-model premium request counts when top-level field is absent.
+                if not premium_row:
+                    agg.premium_requests += to_num(mf.get("premium_request_count")) + to_num(
+                        mf.get("premium_requests_count")
+                    )
 
         tlf = r.get("totals_by_language_feature")
         if isinstance(tlf, list):
@@ -675,6 +690,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_28d": "",
             "metrics_loc_added_28d": "",
             "metrics_loc_deleted_28d": "",
+            "metrics_premium_requests_28d": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
@@ -691,6 +707,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_28d": int(agg.loc_suggested),
         "metrics_loc_added_28d": int(agg.loc_added),
         "metrics_loc_deleted_28d": int(agg.loc_deleted),
+        "metrics_premium_requests_28d": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -798,6 +815,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
+        f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -993,6 +1011,7 @@ def main():
         "metrics_loc_suggested_28d",
         "metrics_loc_added_28d",
         "metrics_loc_deleted_28d",
+        "metrics_premium_requests_28d",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
