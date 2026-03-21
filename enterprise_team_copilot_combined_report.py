@@ -552,6 +552,25 @@ def to_num(v: Any) -> float:
     except Exception:
         return 0.0
 
+# -------------------------
+# Premium-request model helpers
+# -------------------------
+# Models included at no premium-request cost for Copilot Business / Enterprise paid plans.
+# Any model whose name does NOT start with one of these prefixes is treated as a premium model.
+# Source: https://docs.github.com/en/copilot/concepts/billing/copilot-requests
+_COPILOT_INCLUDED_MODEL_PREFIXES: tuple = (
+    "gpt-4o",       # includes gpt-4o, gpt-4o-mini, gpt-4o-2024-*
+    "gpt-4.1",      # includes gpt-4.1 and any date-versioned variants
+    "gpt-5-mini",   # gpt-5-mini
+    "gpt-5mini",    # alternate hyphen-less spelling
+    "default",      # "default" slot maps to the included base model
+)
+
+def _is_included_model(model_name: str) -> bool:
+    """Return True when the model consumes 0 premium requests on paid Copilot plans."""
+    m = (model_name or "").lower().strip()
+    return any(m.startswith(p) for p in _COPILOT_INCLUDED_MODEL_PREFIXES)
+
 def top_key(counter: Dict[str, float]) -> str:
     if not counter:
         return ""
@@ -625,8 +644,19 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
         agg.completions += to_num(r.get("code_generation_activity_count"))
         agg.acceptances += to_num(r.get("code_acceptance_activity_count"))
 
-        # Premium requests: check several candidate field names used across API versions.
-        # 'copilot_premium_requests' is the field used by the newer flat-report NDJSON format.
+        # Premium requests: try explicit field names first (forward-compat with future API shapes),
+        # then fall back to counting interactions with non-included (premium) models derived from
+        # totals_by_model_feature.  The current users-28-day NDJSON schema does not emit a
+        # dedicated top-level premium-request field; the model-based estimation below is the
+        # primary path.  None of these approaches apply a per-model multiplier, so the count
+        # represents the number of premium-model interactions rather than billed request units.
+        _EXPLICIT_PREMIUM_TOP_FIELDS = (
+            "copilot_premium_requests",
+            "total_premium_requests_count",
+            "premium_requests_count",
+            "premium_interaction_count",
+        )
+        has_explicit_top_premium = any(r.get(k) is not None for k in _EXPLICIT_PREMIUM_TOP_FIELDS)
         premium_row = (
             to_num(r.get("copilot_premium_requests"))
             or to_num(r.get("total_premium_requests_count"))
@@ -646,21 +676,43 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(mf, dict):
                     continue
                 model = mf.get("model") or "unknown"
-                agg.model_counts[model] = agg.model_counts.get(model, 0.0) + to_num(
-                    mf.get("user_initiated_interaction_count")
-                )
-                # Accumulate per-model premium request counts when top-level field is absent.
-                if not premium_row:
-                    agg.premium_requests += (
-                        to_num(mf.get("copilot_premium_requests"))
-                        or (to_num(mf.get("premium_request_count")) + to_num(mf.get("premium_requests_count")))
+                interaction_count = to_num(mf.get("user_initiated_interaction_count"))
+                agg.model_counts[model] = agg.model_counts.get(model, 0.0) + interaction_count
+
+                # Accumulate premium requests only when no top-level explicit field is present.
+                # We check key *presence* (not just truthiness) so that an explicit value of 0
+                # (meaning the API actively reported zero) is respected without triggering the
+                # model-based fallback below.
+                if not has_explicit_top_premium:
+                    # 1. Try explicit per-model premium count fields (may appear in future API versions).
+                    _EXPLICIT_PREMIUM_MF_FIELDS = (
+                        "copilot_premium_requests",
+                        "premium_request_count",
+                        "premium_requests_count",
                     )
+                    has_explicit_mf_premium = any(mf.get(k) is not None for k in _EXPLICIT_PREMIUM_MF_FIELDS)
+                    mf_premium = (
+                        to_num(mf.get("copilot_premium_requests"))
+                        or to_num(mf.get("premium_request_count"))
+                        or to_num(mf.get("premium_requests_count"))
+                    )
+                    if mf_premium:
+                        agg.premium_requests += mf_premium
+                    elif not has_explicit_mf_premium and model != "unknown" and not _is_included_model(model):
+                        # 2. Model-based fallback: count every interaction with a non-included
+                        #    (premium) model as one premium request.  This undercounts for models
+                        #    with a multiplier greater than 1× but gives correct non-zero values
+                        #    for all users who actively use premium models.
+                        agg.premium_requests += interaction_count
         else:
             # Flat NDJSON format: model is a top-level field per row.
             model = r.get("model")
             if isinstance(model, str) and model:
                 count = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
                 agg.model_counts[model] = agg.model_counts.get(model, 0.0) + count
+                # If the flat format has no top-level premium field, use model-based estimation.
+                if not has_explicit_top_premium and not _is_included_model(model):
+                    agg.premium_requests += count
 
         tlf = r.get("totals_by_language_feature")
         if isinstance(tlf, list):
