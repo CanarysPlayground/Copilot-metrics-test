@@ -2,6 +2,15 @@
 
 Generates a daily CSV report of GitHub Copilot usage metrics for each user across enterprise teams, and optionally delivers the report by email.
 
+## Prerequisites
+
+- **Python 3.11+** (tested with Python 3.11)
+- **GitHub Personal Access Token (PAT)** with the following scopes:
+  - `read:enterprise` – required to read enterprise team memberships
+  - `manage_billing:copilot` – required to read Copilot billing seats and usage metrics
+  - `read:org` (optional) – may be required for some enterprise configurations
+  - **SCIM (EMU only):** For Enterprise Managed Users, the token must also have SCIM access to retrieve user names and emails from the identity provider
+
 ## Setup
 
 1. Install dependencies:
@@ -10,16 +19,54 @@ Generates a daily CSV report of GitHub Copilot usage metrics for each user acros
    ```
 
 2. Set the required environment variables (or create a `.env` file):
+
+   **Required:**
    | Variable | Description |
    |---|---|
    | `GITHUB_TOKEN` | Personal access token with `read:enterprise` and `manage_billing:copilot` scopes |
    | `ENTERPRISE_SLUG` | The slug of your GitHub enterprise (e.g. `my-org`) |
-   | `ENTERPRISE_TEAM_SLUGS` | Optional comma-separated team slugs to filter; pipe (`\|`) merges teams |
+
+   **Optional – Team Filtering:**
+   | Variable | Description |
+   |---|---|
+   | `ENTERPRISE_TEAM_SLUGS` | Comma-separated team slugs to filter (e.g. `team-a,team-b`). Use pipe (`|`) to merge teams into one report (e.g. `team-a|team-b,team-c`). Leave empty to process all enterprise teams. |
+
+   **Optional – Advanced Configuration:**
+   | Variable | Description |
+   |---|---|
+   | `API_BASE` / `GITHUB_API_BASE` | Override the GitHub API base URL (default: `https://api.github.com`). Useful for GitHub Enterprise Server. |
+   | `GITHUB_API_VERSION` | GitHub API version header (default: `2022-11-28`) |
+   | `OUTPUT_CSV` | Custom output filename (default: `enterprise_team_users_copilot_combined_YYYYMMDD.csv`) |
+   | `LOGIN_SUFFIX` | Override the suffix token used for EMU login matching (default: derived from enterprise slug) |
+
+   **Optional – Debugging:**
+   | Variable | Description |
+   |---|---|
+   | `DEBUG_JSON` | Set to `1` to enable debug output of API responses and metrics parsing |
+   | `DEBUG_FILE_PREFIX` | Prefix for debug output files (default: `copilot_metrics_debug`) |
 
 3. Run the script:
    ```bash
    python enterprise_team_copilot_combined_report.py
    ```
+
+---
+
+## Output File Naming
+
+The script generates CSV files with the following naming conventions:
+
+| Mode | Filename Pattern | Example |
+|---|---|---|
+| All teams (default) | `enterprise_team_users_copilot_combined_YYYYMMDD.csv` | `enterprise_team_users_copilot_combined_20250115.csv` |
+| Single team filter | `enterprise_team_<slug>_copilot_YYYYMMDD.csv` | `enterprise_team_sales_copilot_20250115.csv` |
+| Merged teams (pipe) | `enterprise_team_<slug1>_and_<slug2>_copilot_YYYYMMDD.csv` | `enterprise_team_sales_and_marketing_copilot_20250115.csv` |
+
+> **Note:** If your team slug contains "copilot" (e.g. `accelerator-copilot`), the filename will include "copilot" twice: `enterprise_team_accelerator-copilot_copilot_20250115.csv`. This is expected behavior.
+
+When using `ENTERPRISE_TEAM_SLUGS`:
+- Each comma-separated entry produces a separate CSV file
+- Teams joined with `|` are merged into a single CSV with rows deduplicated by login (first occurrence wins)
 
 ---
 
@@ -132,7 +179,9 @@ The report tries three sources in order for each activity row, stopping at the f
 
 ## Email Delivery
 
-If SMTP settings are configured, the report is emailed as a CSV attachment to the team's configured recipient(s):
+If SMTP settings are configured, the report is emailed as a CSV attachment to the team's configured recipient(s).
+
+### SMTP Configuration
 
 | Variable | Description |
 |---|---|
@@ -142,4 +191,122 @@ If SMTP settings are configured, the report is emailed as a CSV attachment to th
 | `SMTP_PASSWORD` | SMTP login password |
 | `SENDER_EMAIL` | From-address for outgoing emails |
 
-Per-team recipient addresses are resolved from env vars named `<TEAM_SLUG_UPPERCASE>_TEAM_EMAIL` (e.g. `ACCELERATOR_COPILOT_TEAM_EMAIL`), falling back to positional vars `TEAM1_HEAD_EMAIL`, `TEAM2_HEAD_EMAIL`, etc.
+The script uses SMTP with STARTTLS encryption. All five SMTP settings must be configured for email delivery to work.
+
+### Per-Team Recipient Configuration
+
+Per-team recipient addresses are resolved using two naming schemes (first match wins):
+
+**Scheme 1 (preferred): Slug-derived name**
+
+Derive the secret name from the team slug by:
+1. Uppercasing the slug
+2. Replacing hyphens and special characters with underscores
+3. Appending `_TEAM_EMAIL`
+
+| Team Slug | Environment Variable |
+|---|---|
+| `accelerator-copilot` | `ACCELERATOR_COPILOT_TEAM_EMAIL` |
+| `delivery-copilot` | `DELIVERY_COPILOT_TEAM_EMAIL` |
+| `nt-copilot` | `NT_COPILOT_TEAM_EMAIL` |
+
+**Scheme 2 (legacy/fallback): Positional name**
+
+Uses `TEAM1_HEAD_EMAIL`, `TEAM2_HEAD_EMAIL`, etc., where the number corresponds to the team's position in `ENTERPRISE_TEAM_SLUGS`.
+
+**Multiple recipients:** Each variable may contain a single address or a comma-separated list of addresses:
+```
+ACCELERATOR_COPILOT_TEAM_EMAIL="alice@example.com, bob@example.com"
+```
+
+**Merged teams:** When teams are merged with `|`, email recipients from all teams in the group are collected and deduplicated.
+
+---
+
+## GitHub Actions Workflow
+
+A pre-configured GitHub Actions workflow (`daily-copilot-report.yml`) is included for automated daily report generation.
+
+### Workflow Schedule
+
+The workflow runs:
+- **Daily at 02:00 UTC** (scheduled via cron)
+- **On-demand** via manual workflow dispatch
+
+### Required Repository Secrets
+
+| Secret | Description |
+|---|---|
+| `GH_PAT_TOKEN` | GitHub PAT with required scopes |
+| `ENTERPRISE_SLUG` | Your GitHub enterprise slug |
+
+### Optional Repository Secrets
+
+| Secret | Description |
+|---|---|
+| `ENTERPRISE_TEAM_SLUGS` | Comma-separated team slugs to filter |
+| `SMTP_SERVER` | SMTP server hostname |
+| `SMTP_PORT` | SMTP port (default: 587) |
+| `SMTP_USERNAME` | SMTP login username |
+| `SMTP_PASSWORD` | SMTP login password |
+| `SENDER_EMAIL` | Email sender address |
+| `TEAM1_HEAD_EMAIL` – `TEAM10_HEAD_EMAIL` | Per-team recipient emails (positional) |
+| `<SLUG>_TEAM_EMAIL` | Per-team recipient emails (slug-derived, e.g. `ACCELERATOR_COPILOT_TEAM_EMAIL`) |
+
+### Workflow Artifacts
+
+The workflow uploads the generated CSV report(s) as artifacts with a 90-day retention period. Artifacts are named `copilot-metrics-report-<run_id>` and contain all CSV files matching `enterprise_team_*_copilot_*.csv`.
+
+---
+
+## SCIM and User Information
+
+The script attempts to retrieve user display names and email addresses from multiple sources:
+
+### Enterprise Managed Users (EMU)
+
+For EMU enterprises, the script fetches user information from the SCIM API, which provides:
+- Display name from the identity provider
+- Email address from the identity provider
+
+If SCIM is unavailable (returns 401, 403, 404, or 501), the script falls back to the GitHub Users API.
+
+### Non-EMU Enterprises
+
+For standard enterprises, user information is retrieved from:
+1. **Copilot billing seat data** – includes the user's GitHub profile name and public email
+2. **GitHub Users API** – as a fallback when seat data is incomplete
+
+> **Note:** For non-EMU enterprises, the email field is populated only when the user has set a publicly-visible email on their GitHub profile. For complete email coverage, consider using an EMU enterprise or ask users to set a public email in their profile settings.
+
+---
+
+## Troubleshooting
+
+### Team Slugs Not Found
+
+If the script reports that team slugs were not found, it will list all available enterprise teams with their slugs. Use the exact slug from this list in your `ENTERPRISE_TEAM_SLUGS` configuration.
+
+The script performs flexible matching:
+- Case-insensitive matching
+- Normalized slugs (special characters replaced with hyphens)
+- Matches against both full slugs (`ent:team-name`) and local slugs (`team-name`)
+
+### Missing SCIM Data
+
+If SCIM data is unavailable:
+- The script will log a warning and continue
+- User names and emails will be populated from the GitHub Users API instead
+- Some users may have blank email fields if they haven't set a public email
+
+### Debugging API Responses
+
+Enable debug mode to inspect API responses:
+```bash
+DEBUG_JSON=1 python enterprise_team_copilot_combined_report.py
+```
+
+This creates debug files:
+- `copilot_metrics_debug_latest_payload.json` – The metrics report manifest
+- `copilot_metrics_debug_report_head.txt` – First 20KB of the downloaded report
+- `copilot_metrics_debug_report_rows_first5.json` – First 5 parsed report rows
