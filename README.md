@@ -29,7 +29,7 @@ Generates a daily CSV report of GitHub Copilot usage metrics for each user acros
    **Optional – Team Filtering:**
    | Variable | Description |
    |---|---|
-   | `ENTERPRISE_TEAM_SLUGS` | Comma-separated team slugs to filter (e.g. `team-a,team-b`). Use pipe (`\|`) to merge teams into one report (e.g. `team-a\|team-b,team-c`). Leave empty to process all enterprise teams. |
+   | `ENTERPRISE_TEAM_SLUGS` | Comma-separated team slugs to filter (e.g. `team-a,team-b`). Use pipe (`|`) to merge teams into one report (e.g. `team-a|team-b,team-c`). Leave empty to process all enterprise teams. |
 
    **Optional – Advanced Configuration:**
    | Variable | Description |
@@ -59,8 +59,10 @@ The script generates CSV files with the following naming conventions:
 | Mode | Filename Pattern | Example |
 |---|---|---|
 | All teams (default) | `enterprise_team_users_copilot_combined_YYYYMMDD.csv` | `enterprise_team_users_copilot_combined_20250115.csv` |
-| Single team filter | `enterprise_team_<slug>_copilot_YYYYMMDD.csv` | `enterprise_team_accelerator-copilot_copilot_20250115.csv` |
-| Merged teams (pipe) | `enterprise_team_<slug1>_and_<slug2>_copilot_YYYYMMDD.csv` | `enterprise_team_delivery-copilot_and_accelerator-copilot_copilot_20250115.csv` |
+| Single team filter | `enterprise_team_<slug>_copilot_YYYYMMDD.csv` | `enterprise_team_sales_copilot_20250115.csv` |
+| Merged teams (pipe) | `enterprise_team_<slug1>_and_<slug2>_copilot_YYYYMMDD.csv` | `enterprise_team_sales_and_marketing_copilot_20250115.csv` |
+
+> **Note:** If your team slug contains "copilot" (e.g. `accelerator-copilot`), the filename will include "copilot" twice: `enterprise_team_accelerator-copilot_copilot_20250115.csv`. This is expected behavior.
 
 When using `ENTERPRISE_TEAM_SLUGS`:
 - Each comma-separated entry produces a separate CSV file
