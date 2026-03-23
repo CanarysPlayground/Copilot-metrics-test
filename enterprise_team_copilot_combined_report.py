@@ -844,6 +844,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_28d": "",
             "metrics_loc_added_28d": "",
             "metrics_loc_deleted_28d": "",
+            "metrics_loc_suggested_inline_28d": "",
+            "metrics_loc_added_inline_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
             "metrics_premium_requests_28d": "",
             "metrics_top_model_28d": "",
@@ -878,6 +880,13 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # Calculate traditional acceptance rate: what % of suggested code was accepted/added
     loc_acceptance_pct_inline = (inline_loc_added / inline_loc_suggested * 100.0) if inline_loc_suggested > 0 else 0.0
 
+    # NOTE: The output includes both total LOC metrics and inline-only LOC metrics:
+    # - metrics_loc_*_28d: Total across ALL features (includes edit, agent, inline)
+    # - metrics_loc_*_inline_28d: Only inline completions (excludes edit, agent)
+    # - metrics_loc_acceptance_pct_inline_28d: Calculated using inline-only values
+    #
+    # For accurate acceptance percentage, use: metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d
+    # Do NOT calculate as: metrics_loc_added_28d / metrics_loc_suggested_28d (will be incorrect)
     return {
         "metrics_interactions_28d": int(agg.interactions),
         "metrics_completions_28d": int(agg.completions),
@@ -887,6 +896,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_28d": int(agg.loc_suggested),
         "metrics_loc_added_28d": int(agg.loc_added),
         "metrics_loc_deleted_28d": int(agg.loc_deleted),
+        "metrics_loc_suggested_inline_28d": int(inline_loc_suggested),
+        "metrics_loc_added_inline_28d": int(inline_loc_added),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
         "metrics_premium_requests_28d": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
