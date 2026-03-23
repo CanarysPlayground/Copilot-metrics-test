@@ -811,6 +811,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
+            # Note: 'unknown' is an intentional catch-all for rows without feature data
             feat = normalize_feature_name(r.get("feature"))
             
             val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
@@ -864,6 +865,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     for feat, suggested in agg.feature_loc_suggested.items():
         if feat not in EXCLUDED_FEATURES_FOR_INLINE_PCT:
             inline_loc_suggested += suggested
+            # .get() with default 0.0 handles data inconsistencies gracefully
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
     loc_acceptance_pct_inline = (inline_loc_added / inline_loc_suggested * 100.0) if inline_loc_suggested > 0 else 0.0
