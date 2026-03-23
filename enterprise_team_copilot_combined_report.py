@@ -84,6 +84,15 @@ HEADERS_SCIM = {
 
 SESSION = requests.Session()
 
+# Default feature name for rows with missing or invalid feature data
+DEFAULT_FEATURE_NAME = "unknown"
+
+# Features to exclude from inline completion acceptance rate calculation
+# Edit and Agent features add code directly without traditional suggestions,
+# so they shouldn't be included when calculating inline completion acceptance rate.
+# Using a set for O(1) lookup performance.
+EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent"}
+
 # -------------------------
 # HTTP helpers
 # -------------------------
@@ -601,6 +610,25 @@ def format_language_loc(lang_dict: Dict[str, float]) -> str:
     sorted_items = sorted(lang_dict.items(), key=lambda kv: kv[1], reverse=True)
     return ", ".join(f"{lang} {int(v)}" for lang, v in sorted_items if v > 0)
 
+def get_loc_field_value(row: Dict[str, Any], new_field: str, old_field: str) -> float:
+    """
+    Helper to extract LoC field value from API response.
+    Tries new field name first (e.g., loc_suggested_to_add_sum, loc_added_sum, loc_deleted_sum),
+    falls back to old name (e.g., loc_suggested, loc_added, loc_deleted).
+    Returns the numeric value using to_num(). Correctly handles zero values.
+    """
+    if new_field in row:
+        return to_num(row[new_field])
+    return to_num(row.get(old_field))
+
+def normalize_feature_name(feature_value: Optional[str]) -> str:
+    """
+    Normalize feature name to lowercase for consistent lookups.
+    Returns DEFAULT_FEATURE_NAME if feature_value is None or empty.
+    Note: format_feature_name() handles display formatting (capitalization).
+    """
+    return (feature_value or DEFAULT_FEATURE_NAME).lower()
+
 @dataclass
 class UserAgg:
     user: str
@@ -621,6 +649,11 @@ class UserAgg:
 
     language_loc_suggested: Dict[str, float] = field(default_factory=dict)
     language_loc_added: Dict[str, float] = field(default_factory=dict)
+
+    # Per-feature LoC tracking for refined acceptance percentage calculation
+    feature_loc_suggested: Dict[str, float] = field(default_factory=dict)
+    feature_loc_added: Dict[str, float] = field(default_factory=dict)
+    feature_loc_deleted: Dict[str, float] = field(default_factory=dict)
 
 def get_user_login_from_row(row: Dict[str, Any]) -> str:
     v = row.get("user_login")
@@ -758,23 +791,45 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             for f in tbf:
                 if not isinstance(f, dict):
                     continue
-                feat = f.get("feature") or "unknown"
+                feat = normalize_feature_name(f.get("feature"))
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + to_num(
                     f.get("user_initiated_interaction_count")
                 )
 
-                agg.loc_suggested += to_num(f.get("loc_suggested_to_add_sum"))
-                agg.loc_added += to_num(f.get("loc_added_sum"))
-                agg.loc_deleted += to_num(f.get("loc_deleted_sum"))
+                # Store LoC per feature for refined acceptance percentage calculation
+                # Nested format uses fixed field names (loc_suggested_to_add_sum, loc_added_sum, loc_deleted_sum)
+                loc_suggested_val = to_num(f.get("loc_suggested_to_add_sum"))
+                loc_added_val = to_num(f.get("loc_added_sum"))
+                loc_deleted_val = to_num(f.get("loc_deleted_sum"))
+                
+                agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
+                agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
+                agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
+                
+                agg.loc_suggested += loc_suggested_val
+                agg.loc_added += loc_added_val
+                agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
-            feat = r.get("feature")
-            if isinstance(feat, str) and feat:
-                val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
-                agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
-            agg.loc_suggested += to_num(r.get("loc_suggested_to_add_sum") if "loc_suggested_to_add_sum" in r else r.get("loc_suggested"))
-            agg.loc_added += to_num(r.get("loc_added_sum") if "loc_added_sum" in r else r.get("loc_added"))
-            agg.loc_deleted += to_num(r.get("loc_deleted_sum") if "loc_deleted_sum" in r else r.get("loc_deleted"))
+            # Note: 'unknown' is an intentional catch-all for rows without feature data
+            feat = normalize_feature_name(r.get("feature"))
+            
+            val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
+            agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
+            
+            # Store LoC per feature for refined acceptance percentage calculation
+            # Flat NDJSON format supports both old and new field names (fallback logic via helper)
+            loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
+            loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
+            loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
+            
+            agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
+            agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
+            agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
+            
+            agg.loc_suggested += loc_suggested_val
+            agg.loc_added += loc_added_val
+            agg.loc_deleted += loc_deleted_val
 
     return users
 
@@ -789,6 +844,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_28d": "",
             "metrics_loc_added_28d": "",
             "metrics_loc_deleted_28d": "",
+            "metrics_loc_acceptance_pct_inline_28d": "",
             "metrics_premium_requests_28d": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
@@ -798,6 +854,20 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
+    
+    # Calculate inline-only LoC acceptance percentage (excluding edit and agent features)
+    # to get accurate inline completion acceptance rate
+    inline_loc_suggested = 0.0
+    inline_loc_added = 0.0
+    
+    # Iterate over suggested features; .get() gracefully handles missing added entries
+    # (expected when suggested code is rejected or not yet applied)
+    for feat, suggested in agg.feature_loc_suggested.items():
+        if feat not in EXCLUDED_FEATURES_FOR_INLINE_PCT:
+            inline_loc_suggested += suggested
+            inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
+    
+    loc_acceptance_pct_inline = (inline_loc_added / inline_loc_suggested * 100.0) if inline_loc_suggested > 0 else 0.0
 
     return {
         "metrics_interactions_28d": int(agg.interactions),
@@ -808,6 +878,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_28d": int(agg.loc_suggested),
         "metrics_loc_added_28d": int(agg.loc_added),
         "metrics_loc_deleted_28d": int(agg.loc_deleted),
+        "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
         "metrics_premium_requests_28d": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
@@ -918,6 +989,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
+        f"  loc_acceptance_pct_inline_28d  Inline completion LOC acceptance rate (excludes edit, edit_mode, agent)\n"
         f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
@@ -1114,6 +1186,7 @@ def main():
         "metrics_loc_suggested_28d",
         "metrics_loc_added_28d",
         "metrics_loc_deleted_28d",
+        "metrics_loc_acceptance_pct_inline_28d",
         "metrics_premium_requests_28d",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
