@@ -84,6 +84,9 @@ HEADERS_SCIM = {
 
 SESSION = requests.Session()
 
+# Default feature name for rows with missing or invalid feature data
+DEFAULT_FEATURE_NAME = "unknown"
+
 # Features to exclude from inline completion acceptance rate calculation
 # Edit and Agent features add code directly without traditional suggestions,
 # so they shouldn't be included when calculating inline completion acceptance rate.
@@ -778,7 +781,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             for f in tbf:
                 if not isinstance(f, dict):
                     continue
-                feat = (f.get("feature") or "unknown").lower()
+                feat = (f.get("feature") or DEFAULT_FEATURE_NAME).lower()
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + to_num(
                     f.get("user_initiated_interaction_count")
                 )
@@ -798,7 +801,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
-            feat = (r.get("feature") or "unknown").lower()
+            feat = (r.get("feature") or DEFAULT_FEATURE_NAME).lower()
             
             val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
             agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
