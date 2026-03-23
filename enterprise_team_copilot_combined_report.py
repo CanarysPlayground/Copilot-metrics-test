@@ -858,6 +858,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # Calculate inline-only LoC suggestion coverage percentage (excluding edit and agent features).
     # NOTE: Despite the variable/column name containing "acceptance_pct", this metric actually
     # measures how much of the added code was originally suggested by Copilot (inverse coverage).
+    # The misleading name is retained for backwards compatibility with existing data pipelines.
     # Formula: min(100, (suggested / added) × 100)
     # - When suggested < added: User expanded/edited suggestions → percentage < 100%
     #   Example: suggested=100, added=150 → (100/150)×100 = 66.67%
@@ -881,8 +882,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
     # Calculate what percentage of the added code was in the original suggestion, capped at 100%
-    raw_pct = (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0
-    loc_acceptance_pct_inline = min(100.0, raw_pct)
+    loc_acceptance_pct_inline = min(100.0, (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0)
 
     return {
         "metrics_interactions_28d": int(agg.interactions),
