@@ -107,6 +107,9 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_suggested_28d` | **Lines of Code (LOC) suggested** — total lines of code that Copilot proposed to the user across all features. Populated primarily by inline code-completion suggestions |
 | `metrics_loc_added_28d` | **Lines of Code (LOC) added** — total lines of code that the user actually added from Copilot-generated content (i.e. accepted and applied suggestions/responses) |
 | `metrics_loc_deleted_28d` | **Lines of Code (LOC) deleted** — total lines of code deleted by the user in Copilot-assisted edits during the period |
+| `metrics_loc_suggested_inline_28d` | **Lines of Code (LOC) suggested (inline only)** — lines suggested by inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
+| `metrics_loc_added_inline_28d` | **Lines of Code (LOC) added (inline only)** — lines added from inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
+| `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100`. This is the accurate acceptance rate for inline completions |
 | `metrics_premium_requests_28d` | **Premium requests** — number of interactions that consumed a premium (non-included) model. See note below for how this is calculated and which models count as premium |
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g. `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g. `python`, `typescript`) |
@@ -133,6 +136,54 @@ For Chat, Edit, and Agent sessions, Copilot can generate and apply entire blocks
 **Example:** A developer uses Copilot Agent to scaffold a 200-line file. `loc_added` increases by 200, but `loc_suggested` may not increase at all because the agent applied the code directly without a ghost-text suggestion step.
 
 This means **`loc_added ≥ loc_suggested` is the norm for heavy Chat/Edit/Agent users**, and is not a data error.
+
+---
+
+## How to calculate accurate LOC acceptance percentage?
+
+**⚠️ Important:** Do NOT calculate acceptance percentage as `metrics_loc_added_28d / metrics_loc_suggested_28d`. This will give incorrect results.
+
+### The Problem
+
+The total LOC metrics (`metrics_loc_*_28d`) include lines from ALL Copilot features:
+- **Inline completions**: Shows ghost-text suggestions that users can accept/reject
+- **Edit mode**: Applies code changes directly without traditional suggestions
+- **Agent mode**: Generates and applies entire files without traditional suggestions
+
+When you calculate `metrics_loc_added_28d / metrics_loc_suggested_28d`:
+- The numerator includes lines from Edit and Agent (which add code directly)
+- The denominator doesn't include Edit/Agent suggestions (they don't use ghost-text)
+- Result: artificially low or >100% acceptance rates
+
+### The Solution
+
+Use the **inline-only LOC metrics** which exclude Edit and Agent features:
+
+**Option 1: Use the pre-calculated field**
+```
+metrics_loc_acceptance_pct_inline_28d
+```
+This field correctly calculates: `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100`
+
+**Option 2: Calculate manually**
+```
+Acceptance % = (metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100
+```
+
+### Example
+
+| Metric | Total (All Features) | Inline Only |
+|--------|---------------------|-------------|
+| LOC Suggested | 1,000 | 1,000 |
+| LOC Added | 1,500 | 800 |
+| **Acceptance %** | **150%** ❌ Incorrect | **80%** ✅ Correct |
+
+In this example:
+- The user accepted 80% of inline completion suggestions
+- They also used Edit/Agent features which added 700 additional lines
+- The total `metrics_loc_added_28d` (1,500) includes both inline (800) + edit/agent (700)
+- Calculating 1,500 / 1,000 = 150% is misleading
+- The correct acceptance rate for inline completions is 800 / 1,000 = 80%
 
 ---
 
