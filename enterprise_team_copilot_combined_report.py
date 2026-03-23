@@ -609,7 +609,8 @@ def format_language_loc(lang_dict: Dict[str, float]) -> str:
 def get_loc_field_value(row: Dict[str, Any], new_field: str, old_field: str) -> float:
     """
     Helper to extract LoC field value from API response.
-    Tries new field name first (e.g., loc_suggested_to_add_sum), falls back to old name (e.g., loc_suggested).
+    Tries new field name first (e.g., loc_suggested_to_add_sum, loc_added_sum, loc_deleted_sum),
+    falls back to old name (e.g., loc_suggested, loc_added, loc_deleted).
     Returns the numeric value using to_num().
     """
     if new_field in row:
@@ -790,6 +791,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
+                # Note: loc_deleted is not tracked per-feature as it's not needed for acceptance % calculation
                 
                 agg.loc_suggested += loc_suggested_val
                 agg.loc_added += loc_added_val
