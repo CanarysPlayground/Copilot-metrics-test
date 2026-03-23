@@ -844,7 +844,6 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_28d": "",
             "metrics_loc_added_28d": "",
             "metrics_loc_deleted_28d": "",
-            "metrics_loc_acceptance_pct_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
             "metrics_premium_requests_28d": "",
             "metrics_top_model_28d": "",
@@ -855,7 +854,6 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
-    loc_acceptance_pct = (agg.loc_added / agg.loc_suggested * 100.0) if agg.loc_suggested > 0 else 0.0
     
     # Calculate inline-only LoC acceptance percentage (excluding edit and agent features)
     # to get accurate inline completion acceptance rate
@@ -880,7 +878,6 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_28d": int(agg.loc_suggested),
         "metrics_loc_added_28d": int(agg.loc_added),
         "metrics_loc_deleted_28d": int(agg.loc_deleted),
-        "metrics_loc_acceptance_pct_28d": round(loc_acceptance_pct, 2),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
         "metrics_premium_requests_28d": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
@@ -992,7 +989,6 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
-        f"  loc_acceptance_pct_28d  LOC acceptance rate: (loc_added / loc_suggested) × 100 %\n"
         f"  loc_acceptance_pct_inline_28d  Inline completion LOC acceptance rate (excludes edit, edit_mode, agent)\n"
         f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
@@ -1190,7 +1186,6 @@ def main():
         "metrics_loc_suggested_28d",
         "metrics_loc_added_28d",
         "metrics_loc_deleted_28d",
-        "metrics_loc_acceptance_pct_28d",
         "metrics_loc_acceptance_pct_inline_28d",
         "metrics_premium_requests_28d",
         "metrics_top_model_28d",
