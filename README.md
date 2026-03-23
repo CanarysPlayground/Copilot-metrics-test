@@ -107,9 +107,9 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_suggested_28d` | **Lines of Code (LOC) suggested** — total lines of code that Copilot proposed to the user across all features. Populated primarily by inline code-completion suggestions |
 | `metrics_loc_added_28d` | **Lines of Code (LOC) added** — total lines of code that the user actually added from Copilot-generated content (i.e. accepted and applied suggestions/responses) |
 | `metrics_loc_deleted_28d` | **Lines of Code (LOC) deleted** — total lines of code deleted by the user in Copilot-assisted edits during the period |
-| `metrics_loc_suggested_inline_28d` | **Lines of Code (LOC) suggested (inline only)** — lines suggested by inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
-| `metrics_loc_added_inline_28d` | **Lines of Code (LOC) added (inline only)** — lines added from inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
-| `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100`. This is the accurate acceptance rate for inline completions |
+| `metrics_loc_suggested_inline_28d` | **[NEW] Lines of Code (LOC) suggested (inline only)** — lines suggested by inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
+| `metrics_loc_added_inline_28d` | **[NEW] Lines of Code (LOC) added (inline only)** — lines added from inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
+| `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100`. This field already existed but now you can see the individual inline-only values used in its calculation |
 | `metrics_premium_requests_28d` | **Premium requests** — number of interactions that consumed a premium (non-included) model. See note below for how this is calculated and which models count as premium |
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g. `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g. `python`, `typescript`) |

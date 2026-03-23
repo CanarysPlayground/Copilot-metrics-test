@@ -884,7 +884,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # - metrics_loc_*_28d: Total across ALL features (includes edit, agent, inline)
     # - metrics_loc_*_inline_28d: Only inline completions (excludes edit, agent)
     # - metrics_loc_acceptance_pct_inline_28d: Calculated using inline-only values
-    # 
+    #
     # For accurate acceptance percentage, use: metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d
     # Do NOT calculate as: metrics_loc_added_28d / metrics_loc_suggested_28d (will be incorrect)
     return {
