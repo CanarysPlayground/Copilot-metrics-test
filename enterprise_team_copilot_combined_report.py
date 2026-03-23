@@ -855,18 +855,27 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
     
-    # Calculate inline-only LoC acceptance percentage (excluding edit and agent features)
-    # to get accurate inline completion acceptance rate
+    # Calculate inline-only LoC acceptance percentage (excluding edit and agent features).
+    # This measures the traditional acceptance rate: what percentage of suggested code was accepted.
+    # Formula: (added / suggested) × 100
+    # - Example: Copilot suggested 100 lines, developer accepted 80 lines → 80%
+    # - Example: Copilot suggested 100 lines, developer accepted and expanded to 150 lines → 150%
+    # Note: Values >100% indicate the developer accepted the suggestion and added more code on top.
+    # 
+    # Two filters are applied:
+    # 1. Exclude edit/agent features (EXCLUDED_FEATURES_FOR_INLINE_PCT) - these features don't use
+    #    ghost-text suggestions and should not be included in inline completion metrics
+    # 2. Only include features where suggested > 0 - avoids division by zero and ensures we only
+    #    measure features that actually showed suggestions
     inline_loc_suggested = 0.0
     inline_loc_added = 0.0
     
-    # Iterate over suggested features; .get() gracefully handles missing added entries
-    # (expected when suggested code is rejected or not yet applied)
     for feat, suggested in agg.feature_loc_suggested.items():
-        if feat not in EXCLUDED_FEATURES_FOR_INLINE_PCT:
+        if feat not in EXCLUDED_FEATURES_FOR_INLINE_PCT and suggested > 0:
             inline_loc_suggested += suggested
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
+    # Calculate traditional acceptance rate: what % of suggested code was accepted/added
     loc_acceptance_pct_inline = (inline_loc_added / inline_loc_suggested * 100.0) if inline_loc_suggested > 0 else 0.0
 
     return {
@@ -989,7 +998,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
-        f"  loc_acceptance_pct_inline_28d  Inline completion LOC acceptance rate (excludes edit, edit_mode, agent)\n"
+        f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
         f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
