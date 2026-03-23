@@ -619,6 +619,14 @@ def get_loc_field_value(row: Dict[str, Any], new_field: str, old_field: str) -> 
     """
     return to_num(row.get(new_field) or row.get(old_field))
 
+def normalize_feature_name(feature_value: Optional[str]) -> str:
+    """
+    Normalize feature name to lowercase for consistent lookups.
+    Returns DEFAULT_FEATURE_NAME if feature_value is None or empty.
+    Note: format_feature_name() handles display formatting (capitalization).
+    """
+    return (feature_value or DEFAULT_FEATURE_NAME).lower()
+
 @dataclass
 class UserAgg:
     user: str
@@ -781,9 +789,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             for f in tbf:
                 if not isinstance(f, dict):
                     continue
-                # Normalize feature name to lowercase for consistent lookups
-                # format_feature_name() handles display formatting (capitalization)
-                feat = (f.get("feature") or DEFAULT_FEATURE_NAME).lower()
+                feat = normalize_feature_name(f.get("feature"))
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + to_num(
                     f.get("user_initiated_interaction_count")
                 )
@@ -803,9 +809,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
-            # Normalize feature name to lowercase for consistent lookups
-            # format_feature_name() handles display formatting (capitalization)
-            feat = (r.get("feature") or DEFAULT_FEATURE_NAME).lower()
+            feat = normalize_feature_name(r.get("feature"))
             
             val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
             agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
