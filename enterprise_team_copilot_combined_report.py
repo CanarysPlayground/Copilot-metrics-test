@@ -858,13 +858,12 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # Calculate inline-only LoC suggestion coverage percentage (excluding edit and agent features).
     # NOTE: Despite the variable/column name containing "acceptance_pct", this metric actually
     # measures how much of the added code was originally suggested by Copilot (inverse coverage).
-    # Formula: (suggested / added) × 100
+    # Formula: (suggested / added) × 100, capped at 100%
     # - When suggested < added: User expanded/edited suggestions → percentage < 100%
     # - When suggested = added: User accepted suggestions as-is → percentage = 100%
-    # - When suggested > added: Unusual edge case (user deleted parts of suggestion) → percentage > 100%
-    #   Note: This can still produce >100% in rare cases, but is expected behavior for this inverse metric
-    # This was changed from the traditional acceptance formula (added/suggested) to avoid common >100%
-    # values that occur when loc_added > loc_suggested (users typically expand/edit suggestions).
+    # - When suggested > added: User only used part of suggestion → capped at 100%
+    # The cap ensures the metric never exceeds 100%, addressing the original issue where >100%
+    # values were common when using the traditional formula (added/suggested).
     # 
     # Two filters are applied:
     # 1. Exclude edit/agent features (EXCLUDED_FEATURES_FOR_INLINE_PCT) - these features don't use
@@ -881,7 +880,9 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     
     # Calculate: what % of the added code was in the original suggestion
     # Example: Copilot suggested 100 lines, user accepted and expanded to 150 lines → 66.7%
-    loc_acceptance_pct_inline = (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0
+    # Cap at 100% to handle edge case where suggested > added (user only used part of suggestion)
+    raw_pct = (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0
+    loc_acceptance_pct_inline = min(100.0, raw_pct)
 
     return {
         "metrics_interactions_28d": int(agg.interactions),
