@@ -858,10 +858,12 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # Calculate inline-only LoC suggestion coverage percentage (excluding edit and agent features).
     # NOTE: Despite the variable/column name containing "acceptance_pct", this metric actually
     # measures how much of the added code was originally suggested by Copilot (inverse coverage).
-    # Formula: (suggested / added) × 100, capped at 100%
+    # Formula: min(100, (suggested / added) × 100)
     # - When suggested < added: User expanded/edited suggestions → percentage < 100%
+    #   Example: suggested=100, added=150 → (100/150)×100 = 66.67%
     # - When suggested = added: User accepted suggestions as-is → percentage = 100%
-    # - When suggested > added: User only used part of suggestion → capped at 100%
+    # - When suggested > added: User accepted most/all of suggestion with minimal expansion → capped at 100%
+    #   Example: suggested=150, added=100 → min(100, (150/100)×100) = 100%
     # The cap ensures the metric never exceeds 100%, addressing the original issue where >100%
     # values were common when using the traditional formula (added/suggested).
     # 
@@ -878,9 +880,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             inline_loc_suggested += suggested
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
-    # Calculate: what % of the added code was in the original suggestion
-    # Example: Copilot suggested 100 lines, user accepted and expanded to 150 lines → 66.7%
-    # Cap at 100% to handle edge case where suggested > added (user only used part of suggestion)
+    # Calculate what percentage of the added code was in the original suggestion, capped at 100%
     raw_pct = (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0
     loc_acceptance_pct_inline = min(100.0, raw_pct)
 
