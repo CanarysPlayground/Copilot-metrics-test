@@ -781,6 +781,8 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             for f in tbf:
                 if not isinstance(f, dict):
                     continue
+                # Normalize feature name to lowercase for consistent lookups
+                # format_feature_name() handles display formatting (capitalization)
                 feat = (f.get("feature") or DEFAULT_FEATURE_NAME).lower()
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + to_num(
                     f.get("user_initiated_interaction_count")
@@ -801,6 +803,8 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
+            # Normalize feature name to lowercase for consistent lookups
+            # format_feature_name() handles display formatting (capitalization)
             feat = (r.get("feature") or DEFAULT_FEATURE_NAME).lower()
             
             val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
