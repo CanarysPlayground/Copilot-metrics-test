@@ -87,7 +87,8 @@ SESSION = requests.Session()
 # Features to exclude from inline completion acceptance rate calculation
 # Edit and Agent features add code directly without traditional suggestions,
 # so they shouldn't be included when calculating inline completion acceptance rate.
-EXCLUDED_FEATURES_FOR_INLINE_PCT = ["edit", "edit_mode", "agent"]
+# Using a set for O(1) lookup performance.
+EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent"}
 
 # -------------------------
 # HTTP helpers
@@ -641,6 +642,7 @@ class UserAgg:
     # Per-feature LoC tracking for refined acceptance percentage calculation
     feature_loc_suggested: Dict[str, float] = field(default_factory=dict)
     feature_loc_added: Dict[str, float] = field(default_factory=dict)
+    feature_loc_deleted: Dict[str, float] = field(default_factory=dict)
 
 def get_user_login_from_row(row: Dict[str, Any]) -> str:
     v = row.get("user_login")
@@ -791,7 +793,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
-                # Note: loc_deleted is not tracked per-feature as it's not needed for acceptance % calculation
+                agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
                 
                 agg.loc_suggested += loc_suggested_val
                 agg.loc_added += loc_added_val
@@ -807,9 +809,11 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 # Flat NDJSON format supports both old and new field names (fallback logic via helper)
                 loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
                 loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
+                loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
                 
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
+                agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
             
             agg.loc_suggested += get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
             agg.loc_added += get_loc_field_value(r, "loc_added_sum", "loc_added")
