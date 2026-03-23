@@ -857,12 +857,15 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     
     # Calculate inline-only LoC suggestion coverage percentage (excluding edit and agent features).
     # NOTE: Despite the variable/column name containing "acceptance_pct", this metric actually
-    # measures "suggestion coverage" - what % of added inline code originated from Copilot suggestions.
+    # measures how much of the added code was originally suggested by Copilot (inverse coverage).
     # Formula: (suggested / added) × 100
+    # - When suggested < added: User expanded/edited suggestions → percentage < 100%
+    # - When suggested = added: User accepted suggestions as-is → percentage = 100%
+    # - When suggested > added: Should not happen for inline features (would indicate data issue)
     # This was changed from the traditional acceptance formula (added/suggested) to avoid >100% values
     # that occur when loc_added > loc_suggested (common when users expand/edit suggestions).
-    # Only includes features where code was suggested (suggested > 0) to avoid including
-    # features like chat/agent that don't use traditional ghost-text suggestions.
+    # Only includes features where code was suggested (suggested > 0) to exclude features like
+    # chat/agent that don't use traditional ghost-text suggestions.
     inline_loc_suggested = 0.0
     inline_loc_added = 0.0
     
@@ -871,9 +874,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             inline_loc_suggested += suggested
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
-    # Calculate suggestion coverage: what % of added code originated from Copilot suggestions
-    # Values are ≤100% because suggested LOC represents the initial ghost-text shown,
-    # while added LOC may include user edits/expansions on top of the suggestions.
+    # Calculate: what % of the added code was in the original suggestion
+    # Example: Copilot suggested 100 lines, user accepted and expanded to 150 lines → 66.7%
     loc_acceptance_pct_inline = (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0
 
     return {
@@ -996,7 +998,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
-        f"  loc_acceptance_pct_inline_28d  Copilot suggestion coverage %: (suggested/added)×100 for inline features only (excludes edit, edit_mode, agent)\n"
+        f"  loc_acceptance_pct_inline_28d  Inline suggestion coverage % (suggested/added, excludes edit/agent)\n"
         f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
