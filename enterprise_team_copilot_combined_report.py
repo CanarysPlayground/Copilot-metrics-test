@@ -84,6 +84,11 @@ HEADERS_SCIM = {
 
 SESSION = requests.Session()
 
+# Features to exclude from inline completion acceptance rate calculation
+# Edit and Agent features add code directly without traditional suggestions,
+# so they shouldn't be included when calculating inline completion acceptance rate.
+EXCLUDED_FEATURES_FOR_INLINE_PCT = ["edit", "edit_mode", "agent"]
+
 # -------------------------
 # HTTP helpers
 # -------------------------
@@ -601,6 +606,16 @@ def format_language_loc(lang_dict: Dict[str, float]) -> str:
     sorted_items = sorted(lang_dict.items(), key=lambda kv: kv[1], reverse=True)
     return ", ".join(f"{lang} {int(v)}" for lang, v in sorted_items if v > 0)
 
+def get_loc_field_value(row: Dict[str, Any], new_field: str, old_field: str) -> float:
+    """
+    Helper to extract LoC field value from API response.
+    Tries new field name first (e.g., loc_suggested_to_add_sum), falls back to old name (e.g., loc_suggested).
+    Returns the numeric value using to_num().
+    """
+    if new_field in row:
+        return to_num(row.get(new_field))
+    return to_num(row.get(old_field))
+
 @dataclass
 class UserAgg:
     user: str
@@ -786,15 +801,15 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
                 
                 # Store LoC per feature for refined acceptance percentage calculation
-                loc_suggested_val = to_num(r.get("loc_suggested_to_add_sum") if "loc_suggested_to_add_sum" in r else r.get("loc_suggested"))
-                loc_added_val = to_num(r.get("loc_added_sum") if "loc_added_sum" in r else r.get("loc_added"))
+                loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
+                loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
                 
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
             
-            agg.loc_suggested += to_num(r.get("loc_suggested_to_add_sum") if "loc_suggested_to_add_sum" in r else r.get("loc_suggested"))
-            agg.loc_added += to_num(r.get("loc_added_sum") if "loc_added_sum" in r else r.get("loc_added"))
-            agg.loc_deleted += to_num(r.get("loc_deleted_sum") if "loc_deleted_sum" in r else r.get("loc_deleted"))
+            agg.loc_suggested += get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
+            agg.loc_added += get_loc_field_value(r, "loc_added_sum", "loc_added")
+            agg.loc_deleted += get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
 
     return users
 
@@ -826,10 +841,9 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # to get accurate inline completion acceptance rate
     inline_loc_suggested = 0.0
     inline_loc_added = 0.0
-    excluded_features = ["edit", "edit_mode", "agent"]
     
     for feat, suggested in agg.feature_loc_suggested.items():
-        if feat.lower() not in excluded_features:
+        if feat.lower() not in EXCLUDED_FEATURES_FOR_INLINE_PCT:
             inline_loc_suggested += suggested
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
