@@ -614,9 +614,7 @@ def get_loc_field_value(row: Dict[str, Any], new_field: str, old_field: str) -> 
     falls back to old name (e.g., loc_suggested, loc_added, loc_deleted).
     Returns the numeric value using to_num().
     """
-    if new_field in row:
-        return to_num(row.get(new_field))
-    return to_num(row.get(old_field))
+    return to_num(row.get(new_field) or row.get(old_field))
 
 @dataclass
 class UserAgg:
@@ -800,24 +798,25 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
-            feat = r.get("feature")
+            feat = r.get("feature") or "unknown"
             if isinstance(feat, str) and feat:
                 val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
-                
-                # Store LoC per feature for refined acceptance percentage calculation
-                # Flat NDJSON format supports both old and new field names (fallback logic via helper)
-                loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
-                loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
-                loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
-                
+            
+            # Store LoC per feature for refined acceptance percentage calculation
+            # Flat NDJSON format supports both old and new field names (fallback logic via helper)
+            loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
+            loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
+            loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
+            
+            if isinstance(feat, str) and feat:
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
                 agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
             
-            agg.loc_suggested += get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
-            agg.loc_added += get_loc_field_value(r, "loc_added_sum", "loc_added")
-            agg.loc_deleted += get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
+            agg.loc_suggested += loc_suggested_val
+            agg.loc_added += loc_added_val
+            agg.loc_deleted += loc_deleted_val
 
     return users
 
