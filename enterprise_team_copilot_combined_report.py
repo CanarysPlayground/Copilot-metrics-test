@@ -867,7 +867,9 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             inline_loc_suggested += suggested
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
-    loc_acceptance_pct_inline = (inline_loc_added / inline_loc_suggested * 100.0) if inline_loc_suggested > 0 else 0.0
+    # Calculate what percentage of added inline code came from suggestions
+    # This avoids >100% values when loc_added > loc_suggested
+    loc_acceptance_pct_inline = (inline_loc_suggested / inline_loc_added * 100.0) if inline_loc_added > 0 else 0.0
 
     return {
         "metrics_interactions_28d": int(agg.interactions),
@@ -989,7 +991,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
-        f"  loc_acceptance_pct_inline_28d  Inline completion LOC acceptance rate (excludes edit, edit_mode, agent)\n"
+        f"  loc_acceptance_pct_inline_28d  % of inline LOC added that came from suggestions: (suggested/added)×100 (excludes edit, edit_mode, agent)\n"
         f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
