@@ -615,9 +615,11 @@ def get_loc_field_value(row: Dict[str, Any], new_field: str, old_field: str) -> 
     Helper to extract LoC field value from API response.
     Tries new field name first (e.g., loc_suggested_to_add_sum, loc_added_sum, loc_deleted_sum),
     falls back to old name (e.g., loc_suggested, loc_added, loc_deleted).
-    Returns the numeric value using to_num().
+    Returns the numeric value using to_num(). Correctly handles zero values.
     """
-    return to_num(row.get(new_field) or row.get(old_field))
+    if new_field in row:
+        return to_num(row[new_field])
+    return to_num(row.get(old_field))
 
 def normalize_feature_name(feature_value: Optional[str]) -> str:
     """
@@ -647,7 +649,7 @@ class UserAgg:
 
     language_loc_suggested: Dict[str, float] = field(default_factory=dict)
     language_loc_added: Dict[str, float] = field(default_factory=dict)
-    
+
     # Per-feature LoC tracking for refined acceptance percentage calculation
     feature_loc_suggested: Dict[str, float] = field(default_factory=dict)
     feature_loc_added: Dict[str, float] = field(default_factory=dict)
