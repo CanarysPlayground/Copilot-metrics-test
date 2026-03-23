@@ -861,11 +861,16 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     # Formula: (suggested / added) × 100
     # - When suggested < added: User expanded/edited suggestions → percentage < 100%
     # - When suggested = added: User accepted suggestions as-is → percentage = 100%
-    # - When suggested > added: Should not happen for inline features (would indicate data issue)
-    # This was changed from the traditional acceptance formula (added/suggested) to avoid >100% values
-    # that occur when loc_added > loc_suggested (common when users expand/edit suggestions).
-    # Only includes features where code was suggested (suggested > 0) to exclude features like
-    # chat/agent that don't use traditional ghost-text suggestions.
+    # - When suggested > added: Unusual edge case (user deleted parts of suggestion) → percentage > 100%
+    #   Note: This can still produce >100% in rare cases, but is expected behavior for this inverse metric
+    # This was changed from the traditional acceptance formula (added/suggested) to avoid common >100%
+    # values that occur when loc_added > loc_suggested (users typically expand/edit suggestions).
+    # 
+    # Two filters are applied:
+    # 1. Exclude edit/agent features (EXCLUDED_FEATURES_FOR_INLINE_PCT) - these features don't use
+    #    ghost-text suggestions, but can still have suggested > 0 in the API data
+    # 2. Only include features where suggested > 0 - avoids including features that never showed
+    #    suggestions (e.g., some chat variants) which would inflate the denominator
     inline_loc_suggested = 0.0
     inline_loc_added = 0.0
     
