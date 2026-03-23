@@ -783,6 +783,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 )
 
                 # Store LoC per feature for refined acceptance percentage calculation
+                # Nested format uses fixed field names (loc_suggested_to_add_sum, loc_added_sum, loc_deleted_sum)
                 loc_suggested_val = to_num(f.get("loc_suggested_to_add_sum"))
                 loc_added_val = to_num(f.get("loc_added_sum"))
                 loc_deleted_val = to_num(f.get("loc_deleted_sum"))
@@ -801,6 +802,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
                 
                 # Store LoC per feature for refined acceptance percentage calculation
+                # Flat NDJSON format supports both old and new field names (fallback logic via helper)
                 loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
                 loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
                 
