@@ -778,7 +778,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             for f in tbf:
                 if not isinstance(f, dict):
                     continue
-                feat = f.get("feature") or "unknown"
+                feat = (f.get("feature") or "unknown").lower()
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + to_num(
                     f.get("user_initiated_interaction_count")
                 )
@@ -798,10 +798,10 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.loc_deleted += loc_deleted_val
         else:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
-            feat = r.get("feature") or "unknown"
-            if isinstance(feat, str) and feat:
-                val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
-                agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
+            feat = (r.get("feature") or "unknown").lower()
+            
+            val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
+            agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
             
             # Store LoC per feature for refined acceptance percentage calculation
             # Flat NDJSON format supports both old and new field names (fallback logic via helper)
@@ -809,10 +809,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
             loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
             
-            if isinstance(feat, str) and feat:
-                agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
-                agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
-                agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
+            agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
+            agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
+            agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
             
             agg.loc_suggested += loc_suggested_val
             agg.loc_added += loc_added_val
@@ -850,7 +849,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     inline_loc_added = 0.0
     
     for feat, suggested in agg.feature_loc_suggested.items():
-        if feat.lower() not in EXCLUDED_FEATURES_FOR_INLINE_PCT:
+        if feat not in EXCLUDED_FEATURES_FOR_INLINE_PCT:
             inline_loc_suggested += suggested
             inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
     
