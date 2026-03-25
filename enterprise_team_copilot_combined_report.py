@@ -1206,6 +1206,8 @@ def main():
         "metrics_loc_suggested_28d",
         "metrics_loc_added_28d",
         "metrics_loc_deleted_28d",
+        "metrics_loc_suggested_inline_28d",
+        "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
         "metrics_premium_requests_28d",
         "metrics_top_model_28d",
