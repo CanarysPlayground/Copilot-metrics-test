@@ -365,6 +365,15 @@ def fetch_copilot_billing_seats_by_login():
     per_page = 100
     while True:
         resp = gh_get(url, headers=HEADERS_JSON, params={"per_page": per_page, "page": page})
+
+        if resp.status_code in (403, 404, 501):
+            print(
+                f"[WARN] Copilot billing seats endpoint returned {resp.status_code} – "
+                f"enterprise '{ENTERPRISE_SLUG}' may not have access to this API "
+                "(non-EMU or insufficient token scope). Seat data will be omitted."
+            )
+            return {}
+
         resp.raise_for_status()
         payload = resp.json() or {}
         seats = payload.get("seats", []) or []
