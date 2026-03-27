@@ -358,6 +358,12 @@ def fetch_github_user_info(login: str) -> Dict[str, str]:
 # Copilot seats (billing)
 # -------------------------
 def fetch_copilot_billing_seats_by_login():
+    """Fetch Copilot billing seat assignments indexed by login.
+
+    Returns an empty dict (with a warning) when the endpoint returns 404 or 501,
+    which can happen for enterprises where the Copilot billing seats API is not
+    available (e.g. some EMU or non-standard enterprise configurations).
+    """
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/copilot/billing/seats"
 
     all_seats = []
@@ -365,6 +371,15 @@ def fetch_copilot_billing_seats_by_login():
     per_page = 100
     while True:
         resp = gh_get(url, headers=HEADERS_JSON, params={"per_page": per_page, "page": page})
+
+        if resp.status_code in (404, 501):
+            print(
+                f"[WARN] Copilot billing seats endpoint returned {resp.status_code} – "
+                f"enterprise '{ENTERPRISE_SLUG}' may not support this API. "
+                "Seat assignment columns will be empty."
+            )
+            return {}
+
         resp.raise_for_status()
         payload = resp.json() or {}
         seats = payload.get("seats", []) or []
