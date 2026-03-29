@@ -489,6 +489,31 @@ def choose_report_url(urls: List[str]) -> str:
             return u
     return urls[0]
 
+def download_all_report_urls(urls: List[str]) -> List[Dict[str, Any]]:
+    """Download and parse all report URLs from the manifest, combining rows from every file.
+
+    The GitHub 28-day report manifest can contain multiple ``download_links`` entries –
+    for example, one file for IDE completions and a separate file for chat/agent
+    interactions.  The original code called ``choose_report_url()`` which returned only
+    the *first* matching URL, silently dropping every other data file.  This caused
+    premium-request counts (and other aggregated metrics) to reflect only a subset of
+    the user's activity, typically producing values roughly half the true total.
+
+    This helper iterates over *all* URLs, downloads each file, parses it, and returns
+    the combined list of rows so that ``aggregate_users()`` sees the complete dataset.
+    """
+    if not urls:
+        raise RuntimeError("No download URLs found in manifest download_links.")
+    all_rows: List[Dict[str, Any]] = []
+    for report_url in urls:
+        print(f"[REPORT] downloading report from: {report_url}")
+        text = download_report_as_text(report_url)
+        if DEBUG:
+            dump_text(text[:20000], "report_head")
+        rows = parse_report_payload(text)
+        all_rows.extend(rows)
+    return all_rows
+
 def download_report_as_text(url: str) -> str:
     r = requests.get(url, allow_redirects=True, timeout=180)
     if r.status_code in (401, 403):
@@ -530,14 +555,7 @@ def download_latest_users_28_day_report_rows() -> List[Dict[str, Any]]:
 
     if isinstance(latest_payload, dict) and "download_links" in latest_payload:
         urls = extract_download_urls_from_manifest(latest_payload)
-        report_url = choose_report_url(urls)
-        print(f"[REPORT] downloading report from: {report_url}")
-
-        text = download_report_as_text(report_url)
-        if DEBUG:
-            dump_text(text[:20000], "report_head")
-
-        rows = parse_report_payload(text)
+        rows = download_all_report_urls(urls)
         if DEBUG:
             dump_json(rows[:5], "report_rows_first5")
         return rows
