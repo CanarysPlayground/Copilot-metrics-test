@@ -380,6 +380,69 @@ def fetch_copilot_billing_seats_by_login():
             by_login[login] = s
     return by_login
 
+def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str, float]:
+    """Fetch premium request usage for the current calendar month per user.
+
+    Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
+    with ``year``, ``month``, and ``user`` query parameters once per login.
+    Returns a mapping of login → total ``grossQuantity`` consumed this calendar
+    month, or an empty dict when the endpoint is unavailable (e.g. the token
+    does not have billing-manager scope, or the enterprise does not use the
+    enhanced billing platform).
+    """
+    if not logins:
+        return {}
+
+    now = datetime.now()
+    year = now.year
+    month = now.month
+    url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/settings/billing/premium_request/usage"
+
+    result: Dict[str, float] = {}
+    endpoint_available = True
+
+    print(f"  Querying billing API for {len(logins)} user(s) ({year}-{month:02d}) …")
+    for idx, login in enumerate(logins, start=1):
+        params: Dict[str, Any] = {"year": year, "month": month, "user": login}
+        try:
+            resp = gh_get(url, headers=HEADERS_JSON, params=params, timeout=90)
+        except requests.exceptions.RequestException as exc:
+            print(f"  [WARN] Request error fetching billing data for {login}: {exc}")
+            continue
+
+        if resp.status_code in (400, 403, 404, 501):
+            print(
+                f"  [INFO] Billing premium-request API returned HTTP {resp.status_code} "
+                f"(user={login}); falling back to 28-day estimate for premium requests."
+            )
+            endpoint_available = False
+            break
+
+        try:
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            print(f"  [WARN] Could not parse billing response for {login}: {exc}")
+            continue
+
+        usage_items = data.get("usageItems") or []
+        total = sum(
+            to_num(item.get("grossQuantity"))
+            for item in usage_items
+            if isinstance(item, dict)
+        )
+        result[login] = total
+
+        if idx % 20 == 0:
+            print(f"  … {idx}/{len(logins)} users processed")
+
+    if not endpoint_available:
+        return {}
+
+    print(f"  Billing API: monthly premium request data fetched for {len(result)} user(s).")
+    return result
+
+
 def is_active(last_activity_at):
     if not last_activity_at:
         return "inactive"
@@ -419,6 +482,8 @@ def parse_membership_login(m):
 
 # -------------------------
 # Copilot metrics report (users-28-day/latest)
+# Used for interactions, completions, LOC and other rolling-window metrics.
+# Premium requests are overridden below by the monthly billing API.
 # -------------------------
 def dump_json(obj: Any, name: str) -> None:
     if not DEBUG:
@@ -865,7 +930,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_inline_28d": "",
             "metrics_loc_added_inline_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
-            "metrics_premium_requests_28d": "",
+            "metrics_premium_requests_mtd": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
@@ -917,7 +982,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_inline_28d": int(inline_loc_suggested),
         "metrics_loc_added_inline_28d": int(inline_loc_added),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
-        "metrics_premium_requests_28d": int(agg.premium_requests),
+        "metrics_premium_requests_mtd": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -1018,7 +1083,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  plan_type               Copilot plan (e.g. copilot_enterprise)\n"
         f"  last_activity_at        Timestamp of the user's last Copilot activity\n"
         f"  active_status           active = last activity within 30 days; otherwise inactive\n\n"
-        f"Metrics (rolling 28-day window)\n"
+        f"Metrics (rolling 28-day window – except premium_requests_mtd which is current calendar month)\n"
         f"  interactions_28d        Total user-initiated prompts across all Copilot features\n"
         f"  completions_28d         Number of times Copilot generated code for the user\n"
         f"  acceptances_28d         Number of times the user accepted a Copilot suggestion\n"
@@ -1028,7 +1093,9 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
-        f"  premium_requests_28d    Number of premium (non-base model) requests consumed in the 28-day window\n"
+        f"  premium_requests_mtd    Premium (non-base model) requests consumed in the current calendar month\n"
+        f"                          (e.g. Mar 1 – Mar 31). Sourced from the GitHub billing API; falls back\n"
+        f"                          to a 28-day model-based estimate when the billing API is unavailable.\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -1128,6 +1195,42 @@ def main():
     metrics_by_login = aggregate_users(report_rows)
     print(f"Aggregated metrics users: {len(metrics_by_login)}")
 
+    # 3b) Override premium_requests with current-month data from the billing API.
+    #     The billing API uses calendar-month boundaries (e.g. Mar 1 – Mar 31)
+    #     instead of a rolling 28-day window, which is what the user wants.
+    now = datetime.now()
+    print(
+        f"Fetching current-month premium request usage "
+        f"({now.year}-{now.month:02d}) from billing API ..."
+    )
+    monthly_premium = fetch_current_month_premium_requests_by_login(list(seats_by_login.keys()))
+    if monthly_premium:
+        print(
+            f"  Applying billing API monthly data "
+            f"(year={now.year}, month={now.month}) to {len(monthly_premium)} user(s)."
+        )
+        # Update every user whose billing data we received.
+        for login, total in monthly_premium.items():
+            if login in metrics_by_login:
+                metrics_by_login[login].premium_requests = total
+            else:
+                # User has billing data but no 28-day metrics activity.
+                new_agg = UserAgg(user=login)
+                new_agg.premium_requests = total
+                metrics_by_login[login] = new_agg
+        # Zero out seat-holders who were queried but returned no billing entry
+        # (they had no premium usage this month).  Non-seat-holders keep whatever
+        # the 28-day estimate computed, since the billing API was never queried
+        # for them.
+        for login in seats_by_login:
+            if login in metrics_by_login and login not in monthly_premium:
+                metrics_by_login[login].premium_requests = 0.0
+    else:
+        print(
+            "  [INFO] Monthly billing data unavailable; "
+            "using 28-day metrics estimate for premium requests."
+        )
+
     # 4) Teams + memberships
     print("Fetching enterprise teams...")
     all_teams = fetch_enterprise_teams()
@@ -1215,7 +1318,7 @@ def main():
         "plan_type",
         "last_activity_at",
         "active_status",
-        # metrics (28d)
+        # metrics (28d rolling window – except premium_requests_mtd which is current calendar month)
         "metrics_interactions_28d",
         "metrics_completions_28d",
         "metrics_acceptances_28d",
@@ -1227,7 +1330,7 @@ def main():
         "metrics_loc_suggested_inline_28d",
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
-        "metrics_premium_requests_28d",
+        "metrics_premium_requests_mtd",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
