@@ -5,6 +5,19 @@ on:
     # Runs every day at 02:00 UTC
     - cron: "0 2 * * *"
   workflow_dispatch:
+    inputs:
+      report_year:
+        description: >
+          Year for the premium-requests report (e.g. 2025).
+          Leave blank to use the current year.
+        required: false
+        type: string
+      report_month:
+        description: >
+          Month for the premium-requests report (1–12, e.g. 3 for March).
+          Leave blank to use the current month.
+        required: false
+        type: string
 
 jobs:
   generate-report:
@@ -29,6 +42,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT_TOKEN }}
           ENTERPRISE_SLUG: ${{ secrets.ENTERPRISE_SLUG }}
+          # Optional: override the reporting period for premium-request counts.
+          # Set via workflow_dispatch inputs to generate a complete-month report
+          # for any past month (e.g. report_year=2025, report_month=3 for all of March).
+          # Leave blank on scheduled runs to use the current calendar month.
+          REPORT_YEAR: ${{ inputs.report_year }}
+          REPORT_MONTH: ${{ inputs.report_month }}
           # Comma-separated list of team slugs to process (each gets its own CSV).
           # Leave empty to process all teams into a single combined CSV.
           #
