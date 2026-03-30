@@ -386,9 +386,17 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
     Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
     with ``year``, ``month``, and ``user`` query parameters once per login.
     Returns a mapping of login → total ``grossQuantity`` consumed this calendar
-    month, or an empty dict when the endpoint is unavailable (e.g. the token
-    does not have billing-manager scope, or the enterprise does not use the
-    enhanced billing platform).
+    month (e.g. all requests from the 1st to the last day of the month), or an
+    empty dict when the endpoint is unavailable (e.g. the token does not have
+    billing-manager scope, or the enterprise does not use the enhanced billing
+    platform).
+
+    Error-handling policy:
+    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return {}
+      so callers fall back to the 28-day estimate.
+    - HTTP 400 or 404 for a specific user → that user has no billing record this
+      month; record 0 for them and continue with the remaining users.
+    - Other non-2xx responses → log a warning, skip that user, continue.
     """
     if not logins:
         return {}
@@ -400,6 +408,7 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
 
     result: Dict[str, float] = {}
     endpoint_available = True
+    period_logged = False
 
     print(f"  Querying billing API for {len(logins)} user(s) ({year}-{month:02d}) …")
     for idx, login in enumerate(logins, start=1):
@@ -410,13 +419,28 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
             print(f"  [WARN] Request error fetching billing data for {login}: {exc}")
             continue
 
-        if resp.status_code in (400, 403, 404, 501):
+        # 403 Forbidden  → token lacks billing-manager scope; no point retrying
+        # 501 Not Implemented → endpoint not available for this enterprise
+        # Both mean the endpoint is entirely unavailable for all users.
+        if resp.status_code in (403, 501):
             print(
                 f"  [INFO] Billing premium-request API returned HTTP {resp.status_code} "
-                f"(user={login}); falling back to 28-day estimate for premium requests."
+                f"(user={login}); endpoint unavailable – falling back to 28-day estimate."
             )
             endpoint_available = False
             break
+
+        # 400 Bad Request or 404 Not Found for a specific user means GitHub has
+        # no billing record for that user this month (e.g. they made no premium
+        # requests, or they are not enrolled in the enhanced billing platform).
+        # Treat as 0 and move on so the rest of the batch is not aborted.
+        if resp.status_code in (400, 404):
+            print(
+                f"  [INFO] Billing API returned HTTP {resp.status_code} for user={login}; "
+                f"treating as 0 premium requests for this month."
+            )
+            result[login] = 0.0
+            continue
 
         try:
             resp.raise_for_status()
@@ -424,6 +448,17 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
         except Exception as exc:
             print(f"  [WARN] Could not parse billing response for {login}: {exc}")
             continue
+
+        # Log the time period from the first successful response to confirm the
+        # API is returning data for the expected month (aids debugging).
+        if not period_logged:
+            time_period = data.get("timePeriod") or {}
+            print(
+                f"  [INFO] Billing API time period: year={time_period.get('year', 'N/A')}, "
+                f"month={time_period.get('month', 'N/A')} "
+                f"(requested {year}-{month:02d})"
+            )
+            period_logged = True
 
         usage_items = data.get("usageItems") or []
         total = sum(
