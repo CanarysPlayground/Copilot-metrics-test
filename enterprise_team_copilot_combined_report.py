@@ -380,26 +380,30 @@ def fetch_copilot_billing_seats_by_login():
             by_login[login] = s
     return by_login
 
-def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str, float]:
-    """Fetch premium request usage for the current calendar month per user.
+def fetch_current_month_premium_requests_by_login(
+    logins: List[str],
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Fetch premium request usage and billed amount for the current calendar month per user.
 
     Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
     with ``year``, ``month``, and ``user`` query parameters once per login.
-    Returns a mapping of login → total ``grossQuantity`` consumed this calendar
-    month (e.g. all requests from the 1st to the last day of the month), or an
-    empty dict when the endpoint is unavailable (e.g. the token does not have
-    billing-manager scope, or the enterprise does not use the enhanced billing
-    platform).
+    Returns a 2-tuple:
+      - ``premium_requests``: login → total ``grossQuantity`` consumed this calendar month.
+      - ``billed_amounts``:   login → total USD amount charged (``netAmount`` when present,
+        falling back to ``grossAmount`` per usage item).
+
+    Both dicts are empty when the endpoint is unavailable (e.g. the token does not have
+    billing-manager scope, or the enterprise does not use the enhanced billing platform).
 
     Error-handling policy:
-    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return {}
+    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return ({}, {})
       so callers fall back to the 28-day estimate.
     - HTTP 400 or 404 for a specific user → that user has no billing record this
       month; record 0 for them and continue with the remaining users.
     - Other non-2xx responses → log a warning, skip that user, continue.
     """
     if not logins:
-        return {}
+        return {}, {}
 
     now = datetime.now()
     year = now.year
@@ -407,6 +411,7 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/settings/billing/premium_request/usage"
 
     result: Dict[str, float] = {}
+    billed: Dict[str, float] = {}
     endpoint_available = True
     period_logged = False
 
@@ -440,6 +445,7 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
                 f"treating as 0 premium requests for this month."
             )
             result[login] = 0.0
+            billed[login] = 0.0
             continue
 
         try:
@@ -449,33 +455,43 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
             print(f"  [WARN] Could not parse billing response for {login}: {exc}")
             continue
 
-        # Log the time period from the first successful response to confirm the
-        # API is returning data for the expected month (aids debugging).
+        # Log the time period and currency from the first successful response to
+        # confirm the API is returning data for the expected month (aids debugging).
         if not period_logged:
             time_period = data.get("timePeriod") or {}
+            # Log currency information so callers can verify the unit of the amounts.
+            currency = data.get("currency") or data.get("currencyCode") or "N/A"
             print(
                 f"  [INFO] Billing API time period: year={time_period.get('year', 'N/A')}, "
                 f"month={time_period.get('month', 'N/A')} "
-                f"(requested {year}-{month:02d})"
+                f"(requested {year}-{month:02d}); currency={currency}"
             )
             period_logged = True
 
         usage_items = data.get("usageItems") or []
-        total = sum(
-            to_num(item.get("grossQuantity"))
-            for item in usage_items
-            if isinstance(item, dict)
-        )
-        result[login] = total
+        total_qty = 0.0
+        total_billed = 0.0
+        for item in usage_items:
+            if not isinstance(item, dict):
+                continue
+            total_qty += to_num(item.get("grossQuantity"))
+            # Prefer netAmount (post-discount), fall back to grossAmount.
+            amount = item.get("netAmount")
+            if amount is None:
+                amount = item.get("grossAmount")
+            total_billed += to_num(amount)
+
+        result[login] = total_qty
+        billed[login] = total_billed
 
         if idx % 20 == 0:
             print(f"  … {idx}/{len(logins)} users processed")
 
     if not endpoint_available:
-        return {}
+        return {}, {}
 
     print(f"  Billing API: monthly premium request data fetched for {len(result)} user(s).")
-    return result
+    return result, billed
 
 
 def is_active(last_activity_at):
@@ -760,6 +776,7 @@ class UserAgg:
     loc_deleted: float = 0.0
 
     premium_requests: float = 0.0
+    billed_amount: float = 0.0  # Amount charged this calendar month (from billing API netAmount/grossAmount; currency as returned by the API)
 
     model_counts: Dict[str, float] = field(default_factory=dict)
     language_counts: Dict[str, float] = field(default_factory=dict)
@@ -966,6 +983,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_added_inline_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
             "metrics_premium_requests_mtd": "",
+            "metrics_billed_amount_mtd": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
@@ -1018,6 +1036,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_added_inline_28d": int(inline_loc_added),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
         "metrics_premium_requests_mtd": int(agg.premium_requests),
+        "metrics_billed_amount_mtd": round(agg.billed_amount, 4),  # 4 d.p. preserves sub-cent precision
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -1238,7 +1257,7 @@ def main():
         f"Fetching current-month premium request usage "
         f"({now.year}-{now.month:02d}) from billing API ..."
     )
-    monthly_premium = fetch_current_month_premium_requests_by_login(list(seats_by_login.keys()))
+    monthly_premium, monthly_billed = fetch_current_month_premium_requests_by_login(list(seats_by_login.keys()))
     if monthly_premium:
         print(
             f"  Applying billing API monthly data "
@@ -1248,10 +1267,12 @@ def main():
         for login, total in monthly_premium.items():
             if login in metrics_by_login:
                 metrics_by_login[login].premium_requests = total
+                metrics_by_login[login].billed_amount = monthly_billed.get(login, 0.0)
             else:
                 # User has billing data but no 28-day metrics activity.
                 new_agg = UserAgg(user=login)
                 new_agg.premium_requests = total
+                new_agg.billed_amount = monthly_billed.get(login, 0.0)
                 metrics_by_login[login] = new_agg
         # Zero out seat-holders who were queried but returned no billing entry
         # (they had no premium usage this month).  Non-seat-holders keep whatever
@@ -1260,6 +1281,7 @@ def main():
         for login in seats_by_login:
             if login in metrics_by_login and login not in monthly_premium:
                 metrics_by_login[login].premium_requests = 0.0
+                metrics_by_login[login].billed_amount = 0.0
     else:
         print(
             "  [INFO] Monthly billing data unavailable; "
@@ -1353,7 +1375,7 @@ def main():
         "plan_type",
         "last_activity_at",
         "active_status",
-        # metrics (28d rolling window – except premium_requests_mtd which is current calendar month)
+        # metrics (28d rolling window – except premium_requests_mtd and billed_amount_mtd which are current calendar month)
         "metrics_interactions_28d",
         "metrics_completions_28d",
         "metrics_acceptances_28d",
@@ -1366,6 +1388,7 @@ def main():
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
         "metrics_premium_requests_mtd",
+        "metrics_billed_amount_mtd",  # amount charged per billing API (currency logged at runtime)
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
