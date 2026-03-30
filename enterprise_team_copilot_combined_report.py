@@ -982,8 +982,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_inline_28d": "",
             "metrics_loc_added_inline_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
-            "metrics_premium_requests_mtd": "",
-            "metrics_billed_amount_mtd": "",
+            "metrics_premium_requests_28d": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
@@ -1035,8 +1034,7 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_inline_28d": int(inline_loc_suggested),
         "metrics_loc_added_inline_28d": int(inline_loc_added),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
-        "metrics_premium_requests_mtd": int(agg.premium_requests),
-        "metrics_billed_amount_mtd": round(agg.billed_amount, 4),  # 4 d.p. preserves sub-cent precision
+        "metrics_premium_requests_28d": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -1137,7 +1135,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  plan_type               Copilot plan (e.g. copilot_enterprise)\n"
         f"  last_activity_at        Timestamp of the user's last Copilot activity\n"
         f"  active_status           active = last activity within 30 days; otherwise inactive\n\n"
-        f"Metrics (rolling 28-day window – except premium_requests_mtd which is current calendar month)\n"
+        f"Metrics (rolling 28-day window)\n"
         f"  interactions_28d        Total user-initiated prompts across all Copilot features\n"
         f"  completions_28d         Number of times Copilot generated code for the user\n"
         f"  acceptances_28d         Number of times the user accepted a Copilot suggestion\n"
@@ -1147,9 +1145,8 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
-        f"  premium_requests_mtd    Premium (non-base model) requests consumed in the current calendar month\n"
-        f"                          (e.g. Mar 1 – Mar 31). Sourced from the GitHub billing API; falls back\n"
-        f"                          to a 28-day model-based estimate when the billing API is unavailable.\n"
+        f"  premium_requests_28d    Premium (non-base model) requests in the rolling 28-day window,\n"
+        f"                          estimated from model-based usage data.\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -1249,44 +1246,9 @@ def main():
     metrics_by_login = aggregate_users(report_rows)
     print(f"Aggregated metrics users: {len(metrics_by_login)}")
 
-    # 3b) Override premium_requests with current-month data from the billing API.
-    #     The billing API uses calendar-month boundaries (e.g. Mar 1 – Mar 31)
-    #     instead of a rolling 28-day window, which is what the user wants.
-    now = datetime.now()
-    print(
-        f"Fetching current-month premium request usage "
-        f"({now.year}-{now.month:02d}) from billing API ..."
-    )
-    monthly_premium, monthly_billed = fetch_current_month_premium_requests_by_login(list(seats_by_login.keys()))
-    if monthly_premium:
-        print(
-            f"  Applying billing API monthly data "
-            f"(year={now.year}, month={now.month}) to {len(monthly_premium)} user(s)."
-        )
-        # Update every user whose billing data we received.
-        for login, total in monthly_premium.items():
-            if login in metrics_by_login:
-                metrics_by_login[login].premium_requests = total
-                metrics_by_login[login].billed_amount = monthly_billed.get(login, 0.0)
-            else:
-                # User has billing data but no 28-day metrics activity.
-                new_agg = UserAgg(user=login)
-                new_agg.premium_requests = total
-                new_agg.billed_amount = monthly_billed.get(login, 0.0)
-                metrics_by_login[login] = new_agg
-        # Zero out seat-holders who were queried but returned no billing entry
-        # (they had no premium usage this month).  Non-seat-holders keep whatever
-        # the 28-day estimate computed, since the billing API was never queried
-        # for them.
-        for login in seats_by_login:
-            if login in metrics_by_login and login not in monthly_premium:
-                metrics_by_login[login].premium_requests = 0.0
-                metrics_by_login[login].billed_amount = 0.0
-    else:
-        print(
-            "  [INFO] Monthly billing data unavailable; "
-            "using 28-day metrics estimate for premium requests."
-        )
+    # 3b) No longer overriding premium_requests with calendar-month billing API data.
+    #     The 28-day model-based estimate from aggregate_users() is used directly as
+    #     metrics_premium_requests_28d.
 
     # 4) Teams + memberships
     print("Fetching enterprise teams...")
@@ -1375,7 +1337,7 @@ def main():
         "plan_type",
         "last_activity_at",
         "active_status",
-        # metrics (28d rolling window – except premium_requests_mtd and billed_amount_mtd which are current calendar month)
+        # metrics (28d rolling window)
         "metrics_interactions_28d",
         "metrics_completions_28d",
         "metrics_acceptances_28d",
@@ -1387,8 +1349,7 @@ def main():
         "metrics_loc_suggested_inline_28d",
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
-        "metrics_premium_requests_mtd",
-        "metrics_billed_amount_mtd",  # amount charged per billing API (currency logged at runtime)
+        "metrics_premium_requests_28d",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
