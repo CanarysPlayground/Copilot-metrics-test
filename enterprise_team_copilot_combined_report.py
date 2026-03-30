@@ -52,6 +52,20 @@ ENTERPRISE_TEAM_SLUGS: List[str] = [s for grp in ENTERPRISE_TEAM_SLUG_GROUPS for
 # Optional override if your suffix is not derived correctly from enterprise slug
 LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 
+# Optional: override the reporting period for premium-request counts.
+# Set REPORT_YEAR and REPORT_MONTH to generate an exact complete-month report
+# for any past (or current) month, e.g. REPORT_YEAR=2025 REPORT_MONTH=3 for
+# all of March 2025 (Mar 1 – Mar 31).  When unset, both default to the current
+# calendar month so the daily run continues to work unchanged.
+_report_year_raw = (os.getenv("REPORT_YEAR") or "").strip()
+_report_month_raw = (os.getenv("REPORT_MONTH") or "").strip()
+REPORT_YEAR: Optional[int] = int(_report_year_raw) if _report_year_raw.isdigit() else None
+REPORT_MONTH: Optional[int] = (
+    int(_report_month_raw)
+    if _report_month_raw.isdigit() and 1 <= int(_report_month_raw) <= 12
+    else None
+)
+
 # Debug for metrics report parsing
 DEBUG = os.getenv("DEBUG_JSON", "0") == "1"
 DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
@@ -380,30 +394,51 @@ def fetch_copilot_billing_seats_by_login():
             by_login[login] = s
     return by_login
 
-def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str, float]:
-    """Fetch premium request usage for the current calendar month per user.
+def fetch_monthly_premium_requests_by_login(
+    logins: List[str],
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+) -> Dict[str, float]:
+    """Fetch premium request usage for a given calendar month per user.
 
     Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
-    with ``year``, ``month``, and ``user`` query parameters once per login.
-    Returns a mapping of login → total ``grossQuantity`` consumed this calendar
-    month, or an empty dict when the endpoint is unavailable (e.g. the token
+    with ``year``, ``month``, and ``user`` query parameters once per login and
+    returns a mapping of login → total premium requests *consumed* (sum of
+    positive ``grossQuantity`` values across all ``usageItems``) for the full
+    calendar month (e.g. Mar 1 – Mar 31).
+
+    ``year`` and ``month`` default to the module-level ``REPORT_YEAR`` /
+    ``REPORT_MONTH`` constants (set via env vars), falling back to the current
+    calendar month when those are unset.  Passing explicit values overrides the
+    env-var defaults.
+
+    Returns an empty dict when the endpoint is unavailable (e.g. the token
     does not have billing-manager scope, or the enterprise does not use the
     enhanced billing platform).
+
+    Notes
+    -----
+    * Only positive ``grossQuantity`` values are accumulated so that credit or
+      adjustment line-items (which may carry negative quantities) do not deflate
+      the true consumed count.
+    * Some users are granted additional premium requests beyond the standard
+      plan allocation.  The billing API correctly reflects their total
+      consumption (e.g. 326), and this function preserves that count exactly.
     """
     if not logins:
         return {}
 
     now = datetime.now()
-    year = now.year
-    month = now.month
+    report_year: int = year if year is not None else (REPORT_YEAR if REPORT_YEAR is not None else now.year)
+    report_month: int = month if month is not None else (REPORT_MONTH if REPORT_MONTH is not None else now.month)
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/settings/billing/premium_request/usage"
 
     result: Dict[str, float] = {}
     endpoint_available = True
 
-    print(f"  Querying billing API for {len(logins)} user(s) ({year}-{month:02d}) …")
+    print(f"  Querying billing API for {len(logins)} user(s) ({report_year}-{report_month:02d}) …")
     for idx, login in enumerate(logins, start=1):
-        params: Dict[str, Any] = {"year": year, "month": month, "user": login}
+        params: Dict[str, Any] = {"year": report_year, "month": report_month, "user": login}
         try:
             resp = gh_get(url, headers=HEADERS_JSON, params=params, timeout=90)
         except requests.exceptions.RequestException as exc:
@@ -426,8 +461,11 @@ def fetch_current_month_premium_requests_by_login(logins: List[str]) -> Dict[str
             continue
 
         usage_items = data.get("usageItems") or []
+        # Sum only positive grossQuantity values.  The API may return credit or
+        # adjustment items with negative quantities (e.g. when additional premium
+        # requests are granted to a user); these must not reduce the usage count.
         total = sum(
-            to_num(item.get("grossQuantity"))
+            max(to_num(item.get("grossQuantity")), 0.0)
             for item in usage_items
             if isinstance(item, dict)
         )
@@ -1083,7 +1121,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  plan_type               Copilot plan (e.g. copilot_enterprise)\n"
         f"  last_activity_at        Timestamp of the user's last Copilot activity\n"
         f"  active_status           active = last activity within 30 days; otherwise inactive\n\n"
-        f"Metrics (rolling 28-day window – except premium_requests_mtd which is current calendar month)\n"
+        f"Metrics (rolling 28-day window – except premium_requests_mtd which covers a full calendar month)\n"
         f"  interactions_28d        Total user-initiated prompts across all Copilot features\n"
         f"  completions_28d         Number of times Copilot generated code for the user\n"
         f"  acceptances_28d         Number of times the user accepted a Copilot suggestion\n"
@@ -1093,9 +1131,13 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
-        f"  premium_requests_mtd    Premium (non-base model) requests consumed in the current calendar month\n"
-        f"                          (e.g. Mar 1 – Mar 31). Sourced from the GitHub billing API; falls back\n"
-        f"                          to a 28-day model-based estimate when the billing API is unavailable.\n"
+        f"  premium_requests_mtd    Premium (non-base model) requests consumed for the full calendar month\n"
+        f"                          (1st to last day of the month, e.g. Mar 1 – Mar 31). Controlled by the\n"
+        f"                          REPORT_YEAR / REPORT_MONTH env vars (defaults to current month).\n"
+        f"                          Sourced from the GitHub billing API; falls back to a 28-day model-based\n"
+        f"                          estimate when the billing API is unavailable.\n"
+        f"                          Users granted additional premium requests will show their full consumed\n"
+        f"                          count (e.g. 326 when 326 requests were made across their allocation).\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -1195,19 +1237,27 @@ def main():
     metrics_by_login = aggregate_users(report_rows)
     print(f"Aggregated metrics users: {len(metrics_by_login)}")
 
-    # 3b) Override premium_requests with current-month data from the billing API.
+    # 3b) Override premium_requests with exact calendar-month data from the billing API.
     #     The billing API uses calendar-month boundaries (e.g. Mar 1 – Mar 31)
     #     instead of a rolling 28-day window, which is what the user wants.
+    #     REPORT_YEAR / REPORT_MONTH env vars control which month is fetched;
+    #     both default to the current calendar month when unset.
     now = datetime.now()
+    report_year: int = REPORT_YEAR if REPORT_YEAR is not None else now.year
+    report_month: int = REPORT_MONTH if REPORT_MONTH is not None else now.month
     print(
-        f"Fetching current-month premium request usage "
-        f"({now.year}-{now.month:02d}) from billing API ..."
+        f"Fetching premium request usage "
+        f"({report_year}-{report_month:02d}, full calendar month) from billing API ..."
     )
-    monthly_premium = fetch_current_month_premium_requests_by_login(list(seats_by_login.keys()))
+    monthly_premium = fetch_monthly_premium_requests_by_login(
+        list(seats_by_login.keys()),
+        year=report_year,
+        month=report_month,
+    )
     if monthly_premium:
         print(
             f"  Applying billing API monthly data "
-            f"(year={now.year}, month={now.month}) to {len(monthly_premium)} user(s)."
+            f"(year={report_year}, month={report_month}) to {len(monthly_premium)} user(s)."
         )
         # Update every user whose billing data we received.
         for login, total in monthly_premium.items():
