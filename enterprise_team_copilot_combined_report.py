@@ -410,13 +410,14 @@ def fetch_monthly_premium_requests_by_login(
     with ``year``, ``month``, and ``user`` query parameters once per login.
 
     *year* and *month* must refer to a fully completed billing period.  Pass
-    ``REPORT_YEAR`` and ``REPORT_MONTH`` (which default to the previous calendar
+    ``REPORT_YEAR`` and ``REPORT_MONTH`` (which default to the current calendar
     month) so the returned counts cover the whole month from the 1st to the last day.
 
     Returns a 2-tuple:
       - ``premium_requests``: login → total ``grossQuantity`` consumed in *month*/*year*.
-      - ``billed_amounts``:   login → total USD amount charged (``netAmount`` when present,
-        falling back to ``grossAmount`` per usage item).
+      - ``billed_amounts``:   login → total ``netAmount`` actually charged after the
+        included-request quota is deducted.  Matches the "Billed amount" column in the
+        GitHub billing UI.  0.0 when ``netAmount`` is absent in the response.
 
     Both dicts are empty when the endpoint is unavailable (e.g. the token does not have
     billing-manager scope, or the enterprise does not use the enhanced billing platform).
@@ -498,11 +499,8 @@ def fetch_monthly_premium_requests_by_login(
             if not isinstance(item, dict):
                 continue
             total_qty += to_num(item.get("grossQuantity"))
-            # Prefer netAmount (post-discount), fall back to grossAmount.
-            amount = item.get("netAmount")
-            if amount is None:
-                amount = item.get("grossAmount")
-            total_billed += to_num(amount)
+            # netAmount = actual amount charged after included-request quota → "Billed amount" in GitHub UI.
+            total_billed += to_num(item.get("netAmount"))
 
         result[login] = total_qty
         billed[login] = total_billed
@@ -1160,12 +1158,14 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  billing_period                  The billing month queried, e.g. '2026-03' for March 2026.\n"
         f"                                  Defaults to the current calendar month.\n"
         f"                                  Override with REPORT_YEAR + REPORT_MONTH env vars.\n"
-        f"  billing_premium_requests_month  Total premium (non-base-model) requests billed for the\n"
-        f"                                  full calendar month.  Source: GitHub billing API\n"
-        f"                                  (GET /enterprises/{{ent}}/settings/billing/premium_request/usage).\n"
+        f"  premium_requests_complete_month Total premium (non-base-model) requests used in the full\n"
+        f"                                  calendar month (grossQuantity from billing API).\n"
+        f"                                  Source: GET /enterprises/{{ent}}/settings/billing/premium_request/usage.\n"
         f"                                  Empty when the billing API is unavailable.\n"
-        f"  billing_billed_amount_month     USD amount charged for premium requests this month\n"
-        f"                                  (netAmount when available, otherwise grossAmount).\n"
+        f"  billed_amount_month             USD amount actually charged for premium requests this month\n"
+        f"                                  (netAmount from billing API, after included-request quota deducted).\n"
+        f"                                  Matches 'Billed amount' in the GitHub billing UI.\n"
+        f"                                  $0.00 when usage is within the included-request quota.\n"
         f"                                  Empty when the billing API is unavailable.\n\n"
         f"Metrics (rolling 28-day window)\n"
         f"  interactions_28d        Total user-initiated prompts across all Copilot features\n"
@@ -1177,10 +1177,6 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
-        f"  premium_requests_complete_month  Total premium (non-base-model) requests for the complete\n"
-        f"                                   calendar month. Source: GitHub billing API\n"
-        f"                                   (same value as billing_premium_requests_month).\n"
-        f"                                   Empty when the billing API is unavailable.\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -1496,8 +1492,9 @@ def main():
                     if login in billing_premium_by_login
                     else ("" if not billing_available else 0)
                 ),
-                # Billed amount (netAmount/grossAmount) for the calendar month from
-                # the premium-request billing API.  Empty when the API is unavailable.
+                # Billed amount (netAmount = actual charge after included-request quota).
+                # Matches the "Billed amount" column in the GitHub billing UI.
+                # Empty when the billing API is unavailable.
                 "billed_amount_month": (
                     round(billing_amount_by_login[login], 4)
                     if login in billing_amount_by_login
