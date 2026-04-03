@@ -56,13 +56,12 @@ LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 # Billing report period
 # -------------------------
 # The billing premium-request API returns data for a full calendar month (year + month).
-# By default the script targets the **previous** calendar month so the report always
-# covers a complete billing period.  Override with REPORT_YEAR + REPORT_MONTH to query
-# any specific month (e.g. REPORT_YEAR=2026 REPORT_MONTH=2 for February 2026).
+# By default the script targets the **current** calendar month.  Override with
+# REPORT_YEAR + REPORT_MONTH to query any specific month
+# (e.g. REPORT_YEAR=2026 REPORT_MONTH=2 for February 2026).
 _now = datetime.now()
-_prev_month_last_day = _now.replace(day=1) - timedelta(days=1)
-REPORT_YEAR: int = int(os.getenv("REPORT_YEAR") or _prev_month_last_day.year)
-REPORT_MONTH: int = int(os.getenv("REPORT_MONTH") or _prev_month_last_day.month)
+REPORT_YEAR: int = int(os.getenv("REPORT_YEAR") or _now.year)
+REPORT_MONTH: int = int(os.getenv("REPORT_MONTH") or _now.month)
 # Validate the parsed values to catch obviously wrong overrides early.
 if not (1 <= REPORT_MONTH <= 12):
     raise SystemExit(f"[ERROR] REPORT_MONTH must be 1–12, got {REPORT_MONTH}.")
@@ -1159,7 +1158,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  active_status           active = last activity within 30 days; otherwise inactive\n\n"
         f"Billing (calendar month – full month from day 1 to last day)\n"
         f"  billing_period                  The billing month queried, e.g. '2026-03' for March 2026.\n"
-        f"                                  Defaults to the previous completed calendar month.\n"
+        f"                                  Defaults to the current calendar month.\n"
         f"                                  Override with REPORT_YEAR + REPORT_MONTH env vars.\n"
         f"  billing_premium_requests_month  Total premium (non-base-model) requests billed for the\n"
         f"                                  full calendar month.  Source: GitHub billing API\n"
@@ -1272,8 +1271,7 @@ def main():
     print(f"Copilot seats indexed by login: {len(seats_by_login)}")
 
     # 2b) Calendar-month premium request counts from the billing API.
-    #     Queries the previous (last complete) calendar month by default so the data
-    #     covers a full month from day 1 to the last day.  Override with REPORT_YEAR
+    #     Queries the current calendar month by default.  Override with REPORT_YEAR
     #     and REPORT_MONTH env vars to target a specific billing period.
     billing_period_str = f"{REPORT_YEAR}-{REPORT_MONTH:02d}"
     print(
