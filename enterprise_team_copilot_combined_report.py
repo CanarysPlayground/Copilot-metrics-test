@@ -483,12 +483,12 @@ def fetch_monthly_premium_requests_by_login(
         # confirm the API is returning data for the expected month (aids debugging).
         if not period_logged:
             time_period = data.get("timePeriod") or {}
-            # Log currency information so callers can verify the unit of the amounts.
-            currency = data.get("currency") or data.get("currencyCode") or "N/A"
+            # The billing API timePeriod response only includes 'year'; use the requested
+            # month directly.  The API does not return a currency field.
             print(
-                f"  [INFO] Billing API time period: year={time_period.get('year', 'N/A')}, "
-                f"month={time_period.get('month', 'N/A')} "
-                f"(requested {year}-{month:02d}); currency={currency}"
+                f"  [INFO] Billing API confirmed period: "
+                f"year={time_period.get('year', year)}, month={month:02d} "
+                f"(requested {year}-{month:02d})"
             )
             period_logged = True
 
@@ -1162,10 +1162,10 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"                                  calendar month (grossQuantity from billing API).\n"
         f"                                  Source: GET /enterprises/{{ent}}/settings/billing/premium_request/usage.\n"
         f"                                  Empty when the billing API is unavailable.\n"
-        f"  billed_amount_month             USD amount actually charged for premium requests this month\n"
+        f"  billed_amount_month             Amount actually charged for premium requests this month\n"
         f"                                  (netAmount from billing API, after included-request quota deducted).\n"
         f"                                  Matches 'Billed amount' in the GitHub billing UI.\n"
-        f"                                  $0.00 when usage is within the included-request quota.\n"
+        f"                                  0.00 in the billing currency when usage is within the included-request quota.\n"
         f"                                  Empty when the billing API is unavailable.\n\n"
         f"Metrics (rolling 28-day window)\n"
         f"  interactions_28d        Total user-initiated prompts across all Copilot features\n"
@@ -1393,6 +1393,8 @@ def main():
         "metrics_loc_suggested_inline_28d",
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
+        # billing (calendar month)
+        "billing_period",
         "premium_requests_complete_month",
         "billed_amount_month",
         "metrics_top_model_28d",
@@ -1484,6 +1486,10 @@ def main():
                 "plan_type": (seat or {}).get("plan_type", "") if seat else "",
                 "last_activity_at": (seat or {}).get("last_activity_at", "") if seat else "",
                 "active_status": is_active((seat or {}).get("last_activity_at")) if seat else "inactive",
+                # Billing period: the calendar month covered by the premium-request columns.
+                # Format: YYYY-MM (e.g. "2026-03" for March 2026).
+                # Defaults to the current calendar month; override with REPORT_YEAR + REPORT_MONTH.
+                "billing_period": billing_period_str if billing_available else "",
                 # Complete-month premium requests placed in the metrics section for easy
                 # comparison alongside other per-user metrics.  Source: billing API
                 # (same value as the former billing_premium_requests_month column).
