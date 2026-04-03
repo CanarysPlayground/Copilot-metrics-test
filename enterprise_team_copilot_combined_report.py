@@ -1385,10 +1385,6 @@ def main():
         "plan_type",
         "last_activity_at",
         "active_status",
-        # billing (calendar month – full month from day 1 to last day)
-        "billing_period",
-        "billing_premium_requests_month",
-        "billing_billed_amount_month",
         # metrics (28d rolling window)
         "metrics_interactions_28d",
         "metrics_completions_28d",
@@ -1402,6 +1398,7 @@ def main():
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
         "premium_requests_complete_month",
+        "billed_amount_month",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
@@ -1491,25 +1488,19 @@ def main():
                 "plan_type": (seat or {}).get("plan_type", "") if seat else "",
                 "last_activity_at": (seat or {}).get("last_activity_at", "") if seat else "",
                 "active_status": is_active((seat or {}).get("last_activity_at")) if seat else "inactive",
-                # Calendar-month premium request billing data (full month, not rolling 28 days).
-                # Empty string when the billing API is unavailable for this enterprise/token.
-                "billing_period": billing_period_str if billing_available else "",
-                "billing_premium_requests_month": (
-                    round(billing_premium_by_login[login], 2)
-                    if login in billing_premium_by_login
-                    else ("" if not billing_available else 0)
-                ),
-                "billing_billed_amount_month": (
-                    round(billing_amount_by_login[login], 4)
-                    if login in billing_amount_by_login
-                    else ("" if not billing_available else 0)
-                ),
                 # Complete-month premium requests placed in the metrics section for easy
                 # comparison alongside other per-user metrics.  Source: billing API
-                # (same value as billing_premium_requests_month).
+                # (same value as the former billing_premium_requests_month column).
                 "premium_requests_complete_month": (
                     int(billing_premium_by_login[login])
                     if login in billing_premium_by_login
+                    else ("" if not billing_available else 0)
+                ),
+                # Billed amount (netAmount/grossAmount) for the calendar month from
+                # the premium-request billing API.  Empty when the API is unavailable.
+                "billed_amount_month": (
+                    round(billing_amount_by_login[login], 4)
+                    if login in billing_amount_by_login
                     else ("" if not billing_available else 0)
                 ),
             }
