@@ -45,6 +45,11 @@ jobs:
           #   - Make sure each team that should receive the combined report has its
           #     <SLUG>_TEAM_EMAIL secret set (slug uppercased + hyphens → underscores + _TEAM_EMAIL).
           ENTERPRISE_TEAM_SLUGS: ${{ secrets.ENTERPRISE_TEAM_SLUGS }}
+          # Optional: override the billing period for premium-request data.
+          # Defaults to the previous calendar month (last fully completed month).
+          # Set both to target a specific month, e.g. REPORT_YEAR=2026, REPORT_MONTH=2.
+          REPORT_YEAR: ${{ vars.REPORT_YEAR }}
+          REPORT_MONTH: ${{ vars.REPORT_MONTH }}
           # SMTP settings for sending reports by email.
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}

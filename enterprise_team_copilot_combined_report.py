@@ -52,6 +52,26 @@ ENTERPRISE_TEAM_SLUGS: List[str] = [s for grp in ENTERPRISE_TEAM_SLUG_GROUPS for
 # Optional override if your suffix is not derived correctly from enterprise slug
 LOGIN_SUFFIX = (os.getenv("LOGIN_SUFFIX") or "").strip().lower()
 
+# -------------------------
+# Billing report period
+# -------------------------
+# The billing premium-request API returns data for a full calendar month (year + month).
+# By default the script targets the **previous** calendar month so the report always
+# covers a complete billing period.  Override with REPORT_YEAR + REPORT_MONTH to query
+# any specific month (e.g. REPORT_YEAR=2026 REPORT_MONTH=2 for February 2026).
+_now = datetime.now()
+_prev_month_last_day = _now.replace(day=1) - timedelta(days=1)
+REPORT_YEAR: int = int(os.getenv("REPORT_YEAR") or _prev_month_last_day.year)
+REPORT_MONTH: int = int(os.getenv("REPORT_MONTH") or _prev_month_last_day.month)
+# Validate the parsed values to catch obviously wrong overrides early.
+if not (1 <= REPORT_MONTH <= 12):
+    raise SystemExit(f"[ERROR] REPORT_MONTH must be 1–12, got {REPORT_MONTH}.")
+if not (_now.year - 5 <= REPORT_YEAR <= _now.year + 1):
+    raise SystemExit(
+        f"[ERROR] REPORT_YEAR {REPORT_YEAR} is outside the accepted range "
+        f"{_now.year - 5}–{_now.year + 1}. Check REPORT_YEAR env var."
+    )
+
 # Debug for metrics report parsing
 DEBUG = os.getenv("DEBUG_JSON", "0") == "1"
 DEBUG_PREFIX = os.getenv("DEBUG_FILE_PREFIX", "copilot_metrics_debug")
@@ -380,15 +400,22 @@ def fetch_copilot_billing_seats_by_login():
             by_login[login] = s
     return by_login
 
-def fetch_current_month_premium_requests_by_login(
+def fetch_monthly_premium_requests_by_login(
     logins: List[str],
+    year: int,
+    month: int,
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """Fetch premium request usage and billed amount for the current calendar month per user.
+    """Fetch premium request usage and billed amount for a specific calendar month per user.
 
     Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
     with ``year``, ``month``, and ``user`` query parameters once per login.
+
+    *year* and *month* must refer to a fully completed billing period.  Pass
+    ``REPORT_YEAR`` and ``REPORT_MONTH`` (which default to the previous calendar
+    month) so the returned counts cover the whole month from the 1st to the last day.
+
     Returns a 2-tuple:
-      - ``premium_requests``: login → total ``grossQuantity`` consumed this calendar month.
+      - ``premium_requests``: login → total ``grossQuantity`` consumed in *month*/*year*.
       - ``billed_amounts``:   login → total USD amount charged (``netAmount`` when present,
         falling back to ``grossAmount`` per usage item).
 
@@ -397,7 +424,7 @@ def fetch_current_month_premium_requests_by_login(
 
     Error-handling policy:
     - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return ({}, {})
-      so callers fall back to the 28-day estimate.
+      so callers can fall back gracefully.
     - HTTP 400 or 404 for a specific user → that user has no billing record this
       month; record 0 for them and continue with the remaining users.
     - Other non-2xx responses → log a warning, skip that user, continue.
@@ -405,9 +432,6 @@ def fetch_current_month_premium_requests_by_login(
     if not logins:
         return {}, {}
 
-    now = datetime.now()
-    year = now.year
-    month = now.month
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/settings/billing/premium_request/usage"
 
     result: Dict[str, float] = {}
@@ -430,7 +454,7 @@ def fetch_current_month_premium_requests_by_login(
         if resp.status_code in (403, 501):
             print(
                 f"  [INFO] Billing premium-request API returned HTTP {resp.status_code} "
-                f"(user={login}); endpoint unavailable – falling back to 28-day estimate."
+                f"(user={login}); endpoint unavailable – billing columns will be empty."
             )
             endpoint_available = False
             break
@@ -490,7 +514,7 @@ def fetch_current_month_premium_requests_by_login(
     if not endpoint_available:
         return {}, {}
 
-    print(f"  Billing API: monthly premium request data fetched for {len(result)} user(s).")
+    print(f"  Billing API: premium request data fetched for {len(result)} user(s) ({year}-{month:02d}).")
     return result, billed
 
 
@@ -1135,6 +1159,17 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  plan_type               Copilot plan (e.g. copilot_enterprise)\n"
         f"  last_activity_at        Timestamp of the user's last Copilot activity\n"
         f"  active_status           active = last activity within 30 days; otherwise inactive\n\n"
+        f"Billing (calendar month – full month from day 1 to last day)\n"
+        f"  billing_period                  The billing month queried, e.g. '2026-03' for March 2026.\n"
+        f"                                  Defaults to the previous completed calendar month.\n"
+        f"                                  Override with REPORT_YEAR + REPORT_MONTH env vars.\n"
+        f"  billing_premium_requests_month  Total premium (non-base-model) requests billed for the\n"
+        f"                                  full calendar month.  Source: GitHub billing API\n"
+        f"                                  (GET /enterprises/{{ent}}/settings/billing/premium_request/usage).\n"
+        f"                                  Empty when the billing API is unavailable.\n"
+        f"  billing_billed_amount_month     USD amount charged for premium requests this month\n"
+        f"                                  (netAmount when available, otherwise grossAmount).\n"
+        f"                                  Empty when the billing API is unavailable.\n\n"
         f"Metrics (rolling 28-day window)\n"
         f"  interactions_28d        Total user-initiated prompts across all Copilot features\n"
         f"  completions_28d         Number of times Copilot generated code for the user\n"
@@ -1236,6 +1271,25 @@ def main():
     seats_by_login = fetch_copilot_billing_seats_by_login()
     print(f"Copilot seats indexed by login: {len(seats_by_login)}")
 
+    # 2b) Calendar-month premium request counts from the billing API.
+    #     Queries the previous (last complete) calendar month by default so the data
+    #     covers a full month from day 1 to the last day.  Override with REPORT_YEAR
+    #     and REPORT_MONTH env vars to target a specific billing period.
+    billing_period_str = f"{REPORT_YEAR}-{REPORT_MONTH:02d}"
+    print(
+        f"Fetching calendar-month premium request billing data "
+        f"for period {billing_period_str} …"
+    )
+    billing_premium_by_login, billing_amount_by_login = fetch_monthly_premium_requests_by_login(
+        list(seats_by_login.keys()), REPORT_YEAR, REPORT_MONTH
+    )
+    billing_available = bool(billing_premium_by_login) or bool(billing_amount_by_login)
+    if not billing_available:
+        print(
+            f"  [INFO] Billing API data unavailable for {billing_period_str}; "
+            f"billing_premium_requests_month and billing_billed_amount_month columns will be empty."
+        )
+
     # 3) Metrics report and aggregate across all users
     print("Downloading Copilot metrics report (users-28-day/latest) ...")
     report_rows = download_latest_users_28_day_report_rows()
@@ -1245,10 +1299,6 @@ def main():
 
     metrics_by_login = aggregate_users(report_rows)
     print(f"Aggregated metrics users: {len(metrics_by_login)}")
-
-    # 3b) No longer overriding premium_requests with calendar-month billing API data.
-    #     The 28-day model-based estimate from aggregate_users() is used directly as
-    #     metrics_premium_requests_28d.
 
     # 4) Teams + memberships
     print("Fetching enterprise teams...")
@@ -1337,6 +1387,10 @@ def main():
         "plan_type",
         "last_activity_at",
         "active_status",
+        # billing (calendar month – full month from day 1 to last day)
+        "billing_period",
+        "billing_premium_requests_month",
+        "billing_billed_amount_month",
         # metrics (28d rolling window)
         "metrics_interactions_28d",
         "metrics_completions_28d",
@@ -1439,6 +1493,19 @@ def main():
                 "plan_type": (seat or {}).get("plan_type", "") if seat else "",
                 "last_activity_at": (seat or {}).get("last_activity_at", "") if seat else "",
                 "active_status": is_active((seat or {}).get("last_activity_at")) if seat else "inactive",
+                # Calendar-month premium request billing data (full month, not rolling 28 days).
+                # Empty string when the billing API is unavailable for this enterprise/token.
+                "billing_period": billing_period_str if billing_available else "",
+                "billing_premium_requests_month": (
+                    round(billing_premium_by_login[login], 2)
+                    if login in billing_premium_by_login
+                    else ("" if not billing_available else 0)
+                ),
+                "billing_billed_amount_month": (
+                    round(billing_amount_by_login[login], 4)
+                    if login in billing_amount_by_login
+                    else ("" if not billing_available else 0)
+                ),
             }
 
             base.update(metrics_row_for_user(agg))
