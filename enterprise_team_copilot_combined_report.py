@@ -1006,7 +1006,6 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_inline_28d": "",
             "metrics_loc_added_inline_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
-            "metrics_premium_requests_28d": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
@@ -1058,7 +1057,6 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_inline_28d": int(inline_loc_suggested),
         "metrics_loc_added_inline_28d": int(inline_loc_added),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
-        "metrics_premium_requests_28d": int(agg.premium_requests),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -1180,8 +1178,10 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
-        f"  premium_requests_28d    Premium (non-base model) requests in the rolling 28-day window,\n"
-        f"                          estimated from model-based usage data.\n"
+        f"  premium_requests_complete_month  Total premium (non-base-model) requests for the complete\n"
+        f"                                   calendar month. Source: GitHub billing API\n"
+        f"                                   (same value as billing_premium_requests_month).\n"
+        f"                                   Empty when the billing API is unavailable.\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -1403,7 +1403,7 @@ def main():
         "metrics_loc_suggested_inline_28d",
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
-        "metrics_premium_requests_28d",
+        "premium_requests_complete_month",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
@@ -1504,6 +1504,14 @@ def main():
                 "billing_billed_amount_month": (
                     round(billing_amount_by_login[login], 4)
                     if login in billing_amount_by_login
+                    else ("" if not billing_available else 0)
+                ),
+                # Complete-month premium requests placed in the metrics section for easy
+                # comparison alongside other per-user metrics.  Source: billing API
+                # (same value as billing_premium_requests_month).
+                "premium_requests_complete_month": (
+                    int(billing_premium_by_login[login])
+                    if login in billing_premium_by_login
                     else ("" if not billing_available else 0)
                 ),
             }

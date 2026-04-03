@@ -471,7 +471,7 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_suggested_inline_28d` | **Lines of Code (LOC) suggested (inline only)** — lines suggested by inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
 | `metrics_loc_added_inline_28d` | **Lines of Code (LOC) added (inline only)** — lines added from inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
 | `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100`. This field already existed but now you can see the individual inline-only values used in its calculation |
-| `metrics_premium_requests_28d` | **Premium requests** — number of interactions that consumed a premium (non-included) model. See [Premium Request Tracking](#premium-request-tracking) for calculation details |
+| `premium_requests_complete_month` | **Premium requests (complete month)** — total premium (non-base-model) requests for the full calendar month. Source: GitHub billing API (same value as `billing_premium_requests_month`). Empty when the billing API is unavailable. See [Premium Request Tracking](#premium-request-tracking) for details |
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g., `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g., `python`, `typescript`) |
 | `metrics_top_feature_28d` | The Copilot feature the user used most often (e.g., `Inline Chat`, `Agent`, `Ask`, `Edit`) |
@@ -564,7 +564,7 @@ GitHub Copilot plans include a set of base models at no additional cost. Interac
 
 #### Which models are included (non-premium)?
 
-The following models are treated as included and do **not** add to `metrics_premium_requests_28d`:
+The following models are treated as included and do **not** add to `premium_requests_complete_month`:
 
 | Model prefix | Examples |
 |-------------|----------|
@@ -583,7 +583,7 @@ The report tries three sources in order for each activity row, stopping at the f
 2. **Explicit per-model API field** — if a per-model breakdown (`totals_by_model_feature`) includes a dedicated premium count field, those values are summed.
 3. **Model-based estimation (fallback)** — when neither explicit field is present, the report counts every interaction with a non-included model as one premium request. This is the primary path for current API responses.
 
-> **Important caveat:** The estimation in step 3 counts *interactions*, not *billed request units*. Some premium models carry a multiplier greater than 1× (e.g., a single interaction may cost 10 premium requests). Because the GitHub API does not currently expose per-model multipliers in the usage feed, `metrics_premium_requests_28d` may **undercount** the actual number of billed premium request units for users who heavily use high-multiplier models. It remains accurate for models with a 1× multiplier.
+> **Important caveat:** The estimation in step 3 counts *interactions*, not *billed request units*. Some premium models carry a multiplier greater than 1× (e.g., a single interaction may cost 10 premium requests). Because the GitHub API does not currently expose per-model multipliers in the usage feed, the internal model-based estimate may **undercount** the actual number of billed premium request units for users who heavily use high-multiplier models. The `premium_requests_complete_month` column uses billing API data and therefore reflects the true billed count for the complete calendar month.
 
 ---
 
