@@ -403,8 +403,8 @@ def fetch_monthly_premium_requests_by_login(
     logins: List[str],
     year: int,
     month: int,
-) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
-    """Fetch premium request usage and billing amounts for a specific calendar month per user.
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Fetch premium request usage and billed amount for a specific calendar month per user.
 
     Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
     with ``year``, ``month``, and ``user`` query parameters once per login.
@@ -413,11 +413,8 @@ def fetch_monthly_premium_requests_by_login(
     ``REPORT_YEAR`` and ``REPORT_MONTH`` (which default to the current calendar
     month) so the returned counts cover the whole month from the 1st to the last day.
 
-    Returns a 3-tuple:
+    Returns a 2-tuple:
       - ``premium_requests``: login → total ``grossQuantity`` consumed in *month*/*year*.
-      - ``gross_amounts``:    login → total ``grossAmount`` (price × requests before any
-        included-request deductions).  Matches the "Gross amount" column in the GitHub
-        billing UI.
       - ``billed_amounts``:   login → total ``netAmount`` actually charged after the
         included-request quota is deducted.  Matches the "Billed amount" column in the
         GitHub billing UI.  0.0 when ``netAmount`` is absent in the response.
@@ -426,19 +423,18 @@ def fetch_monthly_premium_requests_by_login(
     billing-manager scope, or the enterprise does not use the enhanced billing platform).
 
     Error-handling policy:
-    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return ({}, {}, {})
+    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return ({}, {})
       so callers can fall back gracefully.
     - HTTP 400 or 404 for a specific user → that user has no billing record this
       month; record 0 for them and continue with the remaining users.
     - Other non-2xx responses → log a warning, skip that user, continue.
     """
     if not logins:
-        return {}, {}, {}
+        return {}, {}
 
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/settings/billing/premium_request/usage"
 
     result: Dict[str, float] = {}
-    gross: Dict[str, float] = {}
     billed: Dict[str, float] = {}
     endpoint_available = True
     period_logged = False
@@ -473,7 +469,6 @@ def fetch_monthly_premium_requests_by_login(
                 f"treating as 0 premium requests for this month."
             )
             result[login] = 0.0
-            gross[login] = 0.0
             billed[login] = 0.0
             continue
 
@@ -499,29 +494,25 @@ def fetch_monthly_premium_requests_by_login(
 
         usage_items = data.get("usageItems") or []
         total_qty = 0.0
-        total_gross = 0.0
         total_billed = 0.0
         for item in usage_items:
             if not isinstance(item, dict):
                 continue
             total_qty += to_num(item.get("grossQuantity"))
-            # grossAmount = price × requests (before included-request deduction) → "Gross amount" in GitHub UI.
-            total_gross += to_num(item.get("grossAmount"))
             # netAmount = actual amount charged after included-request quota → "Billed amount" in GitHub UI.
             total_billed += to_num(item.get("netAmount"))
 
         result[login] = total_qty
-        gross[login] = total_gross
         billed[login] = total_billed
 
         if idx % 20 == 0:
             print(f"  … {idx}/{len(logins)} users processed")
 
     if not endpoint_available:
-        return {}, {}, {}
+        return {}, {}
 
     print(f"  Billing API: premium request data fetched for {len(result)} user(s) ({year}-{month:02d}).")
-    return result, gross, billed
+    return result, billed
 
 
 def is_active(last_activity_at):
@@ -1171,10 +1162,6 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"                                  calendar month (grossQuantity from billing API).\n"
         f"                                  Source: GET /enterprises/{{ent}}/settings/billing/premium_request/usage.\n"
         f"                                  Empty when the billing API is unavailable.\n"
-        f"  gross_amount_month              Gross cost for premium requests this month = price × requests\n"
-        f"                                  (grossAmount from billing API, before included-request deductions).\n"
-        f"                                  Matches 'Gross amount' in the GitHub billing UI.\n"
-        f"                                  Empty when the billing API is unavailable.\n"
         f"  billed_amount_month             USD amount actually charged for premium requests this month\n"
         f"                                  (netAmount from billing API, after included-request quota deducted).\n"
         f"                                  Matches 'Billed amount' in the GitHub billing UI.\n"
@@ -1287,10 +1274,10 @@ def main():
         f"Fetching calendar-month premium request billing data "
         f"for period {billing_period_str} …"
     )
-    billing_premium_by_login, billing_gross_by_login, billing_amount_by_login = fetch_monthly_premium_requests_by_login(
+    billing_premium_by_login, billing_amount_by_login = fetch_monthly_premium_requests_by_login(
         list(seats_by_login.keys()), REPORT_YEAR, REPORT_MONTH
     )
-    billing_available = bool(billing_premium_by_login) or bool(billing_gross_by_login) or bool(billing_amount_by_login)
+    billing_available = bool(billing_premium_by_login) or bool(billing_amount_by_login)
     if not billing_available:
         print(
             f"  [INFO] Billing API data unavailable for {billing_period_str}; "
@@ -1407,7 +1394,6 @@ def main():
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
         "premium_requests_complete_month",
-        "gross_amount_month",
         "billed_amount_month",
         "metrics_top_model_28d",
         "metrics_top_language_28d",
@@ -1504,14 +1490,6 @@ def main():
                 "premium_requests_complete_month": (
                     int(billing_premium_by_login[login])
                     if login in billing_premium_by_login
-                    else ("" if not billing_available else 0)
-                ),
-                # Gross amount (grossAmount = price × requests, before included-request
-                # deductions).  Matches the "Gross amount" column in the GitHub billing UI.
-                # Empty when the billing API is unavailable.
-                "gross_amount_month": (
-                    round(billing_gross_by_login[login], 4)
-                    if login in billing_gross_by_login
                     else ("" if not billing_available else 0)
                 ),
                 # Billed amount (netAmount = actual charge after included-request quota).
