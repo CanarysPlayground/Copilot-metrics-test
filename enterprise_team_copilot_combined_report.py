@@ -415,9 +415,13 @@ def fetch_monthly_premium_requests_by_login(
 
     Returns a 2-tuple:
       - ``premium_requests``: login → total ``grossQuantity`` consumed in *month*/*year*.
+        This is the *gross* (pre-deduction) total, i.e. every premium request the user
+        made regardless of whether it fell within their included-request quota.  For a
+        user who consumed 450 requests against a 300-request quota this value is 450.
       - ``billed_amounts``:   login → total ``netAmount`` actually charged after the
         included-request quota is deducted.  Matches the "Billed amount" column in the
-        GitHub billing UI.  0.0 when ``netAmount`` is absent in the response.
+        GitHub billing UI.  For the same user the value is 150 × $0.04 = $6.00.
+        0.0 when ``netAmount`` is absent in the response.
 
     Both dicts are empty when the endpoint is unavailable (e.g. the token does not have
     billing-manager scope, or the enterprise does not use the enhanced billing platform).
@@ -1493,8 +1497,12 @@ def main():
                 # Complete-month premium requests placed in the metrics section for easy
                 # comparison alongside other per-user metrics.  Source: billing API
                 # (same value as the former billing_premium_requests_month column).
+                # round(..., 2) preserves any fractional counts the API may return (the
+                # GitHub billing UI shows values like 685.40 or 136.20 because the
+                # included-request credit is sometimes non-integer).  Using int() would
+                # truncate those fractions and under-report the true consumption.
                 "premium_requests_complete_month": (
-                    int(billing_premium_by_login[login])
+                    round(billing_premium_by_login[login], 2)
                     if login in billing_premium_by_login
                     else ("" if not billing_available else 0)
                 ),
