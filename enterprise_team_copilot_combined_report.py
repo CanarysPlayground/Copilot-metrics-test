@@ -479,7 +479,11 @@ def fetch_monthly_premium_requests_by_login(
         try:
             resp.raise_for_status()
             data = resp.json()
-        except Exception as exc:
+        except (
+            requests.exceptions.HTTPError,
+            requests.exceptions.JSONDecodeError,
+            ValueError,
+        ) as exc:
             print(f"  [WARN] Could not parse billing response for {login}: {exc}")
             continue
 
@@ -680,7 +684,11 @@ def parse_report_payload(text: str) -> List[Dict[str, Any]]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            print(f"[WARN] Skipping malformed NDJSON line: {exc}")
+            continue
         if isinstance(row, dict):
             rows.append(row)
     return rows
