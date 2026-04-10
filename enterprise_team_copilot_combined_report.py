@@ -112,6 +112,17 @@ DEFAULT_FEATURE_NAME = "unknown"
 # Using a set for O(1) lookup performance.
 EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent"}
 
+# Feature categories for per-mode LOC reporting.
+# Keys must match normalized (lowercase) feature names from the API.
+# Inline completions: ghost-text code suggestions in the IDE editor.
+_INLINE_FEATURES: frozenset = frozenset({"code_completion"})
+# Chat (Ask mode): user-initiated chat panel prompts and inline chat sessions.
+_CHAT_FEATURES: frozenset = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
+# Edit mode: chat-panel edit mode where Copilot proposes diffs for user review.
+_EDIT_FEATURES: frozenset = frozenset({"chat_panel_edit_mode"})
+# Agent mode: autonomous agent edits and chat-panel agent mode interactions.
+_AGENT_FEATURES: frozenset = frozenset({"chat_panel_agent_mode", "agent_edit", "chat_panel_custom_mode"})
+
 # -------------------------
 # HTTP helpers
 # -------------------------
@@ -993,6 +1004,11 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
     return users
 
+def _sum_feature_loc(loc_dict: Dict[str, float], feature_set: frozenset) -> int:
+    """Sum LOC values from *loc_dict* for all features in *feature_set*."""
+    return int(sum(loc_dict.get(feat, 0.0) for feat in feature_set))
+
+
 def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     if not agg:
         return {
@@ -1007,6 +1023,12 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_suggested_inline_28d": "",
             "metrics_loc_added_inline_28d": "",
             "metrics_loc_acceptance_pct_inline_28d": "",
+            "metrics_loc_suggested_chat_28d": "",
+            "metrics_loc_added_chat_28d": "",
+            "metrics_loc_suggested_edit_28d": "",
+            "metrics_loc_added_edit_28d": "",
+            "metrics_loc_suggested_agent_28d": "",
+            "metrics_loc_added_agent_28d": "",
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
@@ -1058,6 +1080,12 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_suggested_inline_28d": int(inline_loc_suggested),
         "metrics_loc_added_inline_28d": int(inline_loc_added),
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
+        "metrics_loc_suggested_chat_28d": _sum_feature_loc(agg.feature_loc_suggested, _CHAT_FEATURES),
+        "metrics_loc_added_chat_28d": _sum_feature_loc(agg.feature_loc_added, _CHAT_FEATURES),
+        "metrics_loc_suggested_edit_28d": _sum_feature_loc(agg.feature_loc_suggested, _EDIT_FEATURES),
+        "metrics_loc_added_edit_28d": _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES),
+        "metrics_loc_suggested_agent_28d": _sum_feature_loc(agg.feature_loc_suggested, _AGENT_FEATURES),
+        "metrics_loc_added_agent_28d": _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -1181,6 +1209,14 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
+        f"  loc_suggested_inline_28d      LOC that Copilot proposed for inline completions (ghost-text)\n"
+        f"  loc_added_inline_28d          LOC actually applied from inline completions\n"
+        f"  loc_suggested_chat_28d        LOC that Copilot proposed for Chat (Ask mode, inline chat)\n"
+        f"  loc_added_chat_28d            LOC actually applied from Chat suggestions\n"
+        f"  loc_suggested_edit_28d        LOC that Copilot proposed for Edit mode\n"
+        f"  loc_added_edit_28d            LOC actually applied from Edit mode\n"
+        f"  loc_suggested_agent_28d       LOC that Copilot proposed for Agent mode\n"
+        f"  loc_added_agent_28d           LOC actually applied by Agent mode (includes autonomous file edits)\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
@@ -1397,6 +1433,12 @@ def main():
         "metrics_loc_suggested_inline_28d",
         "metrics_loc_added_inline_28d",
         "metrics_loc_acceptance_pct_inline_28d",
+        "metrics_loc_suggested_chat_28d",
+        "metrics_loc_added_chat_28d",
+        "metrics_loc_suggested_edit_28d",
+        "metrics_loc_added_edit_28d",
+        "metrics_loc_suggested_agent_28d",
+        "metrics_loc_added_agent_28d",
         # billing (calendar month)
         "billing_period",
         "premium_requests_complete_month",
