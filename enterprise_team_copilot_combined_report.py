@@ -120,8 +120,8 @@ _INLINE_FEATURES: frozenset[str] = frozenset({"code_completion"})
 _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
 # Edit mode: chat-panel edit mode where Copilot proposes diffs for user review.
 _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode"})
-# Agent mode: autonomous agent edits and chat-panel agent mode interactions.
-_AGENT_FEATURES: frozenset[str] = frozenset({"chat_panel_agent_mode", "agent_edit", "chat_panel_custom_mode"})
+# Agent mode: only autonomous agent edits (agent_edit) are counted.
+_AGENT_FEATURES: frozenset[str] = frozenset({"agent_edit"})
 
 # -------------------------
 # HTTP helpers
