@@ -115,13 +115,13 @@ EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent"}
 # Feature categories for per-mode LOC reporting.
 # Keys must match normalized (lowercase) feature names from the API.
 # Inline completions: ghost-text code suggestions in the IDE editor.
-_INLINE_FEATURES: frozenset = frozenset({"code_completion"})
+_INLINE_FEATURES: frozenset[str] = frozenset({"code_completion"})
 # Chat (Ask mode): user-initiated chat panel prompts and inline chat sessions.
-_CHAT_FEATURES: frozenset = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
+_CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
 # Edit mode: chat-panel edit mode where Copilot proposes diffs for user review.
-_EDIT_FEATURES: frozenset = frozenset({"chat_panel_edit_mode"})
+_EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode"})
 # Agent mode: autonomous agent edits and chat-panel agent mode interactions.
-_AGENT_FEATURES: frozenset = frozenset({"chat_panel_agent_mode", "agent_edit", "chat_panel_custom_mode"})
+_AGENT_FEATURES: frozenset[str] = frozenset({"chat_panel_agent_mode", "agent_edit", "chat_panel_custom_mode"})
 
 # -------------------------
 # HTTP helpers
@@ -1004,7 +1004,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
     return users
 
-def _sum_feature_loc(loc_dict: Dict[str, float], feature_set: frozenset) -> int:
+def _sum_feature_loc(loc_dict: Dict[str, float], feature_set: frozenset[str]) -> int:
     """Sum LOC values from *loc_dict* for all features in *feature_set*."""
     return int(sum(loc_dict.get(feat, 0.0) for feat in feature_set))
 
