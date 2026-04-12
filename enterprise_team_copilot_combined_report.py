@@ -1108,7 +1108,14 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             + _sum_feature_loc(agg.feature_loc_deleted, _EDIT_FEATURES)
         ),
         "metrics_loc_added_edit_28d": _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES),
-        "metrics_loc_suggested_agent_28d": _sum_feature_loc(agg.feature_loc_suggested, _AGENT_FEATURES),
+        "metrics_loc_suggested_agent_28d": (
+            # loc_suggested_to_add_sum is always 0 for agent_edit (GitHub API excludes
+            # agent file writes from suggestion-style fields).  Use loc_added + loc_deleted
+            # (total lines touched) as the proxy for "all lines Copilot proposed" in
+            # agent mode, matching the same approach used for loc_suggested_edit above.
+            _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
+            + _sum_feature_loc(agg.feature_loc_deleted, _AGENT_FEATURES)
+        ),
         "metrics_loc_added_agent_28d": _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES),
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
@@ -1241,8 +1248,10 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"                                for all proposed edits since the API does not expose pre-acceptance\n"
         f"                                line counts for agent/edit mode\n"
         f"  loc_added_edit_28d            LOC inserted (lines added only) from Edit mode\n"
-        f"  loc_suggested_agent_28d       LOC that Copilot proposed for Agent mode\n"
-        f"  loc_added_agent_28d           LOC actually applied by Agent mode (includes autonomous file edits)\n"
+        f"  loc_suggested_agent_28d       Total LOC touched by Agent mode (lines added + deleted); best proxy\n"
+        f"                                for all proposed agent writes since the API does not expose pre-acceptance\n"
+        f"                                line counts for agent file writes\n"
+        f"  loc_added_agent_28d           LOC actually applied (accepted) by Agent mode\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
         f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
