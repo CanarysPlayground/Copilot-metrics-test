@@ -122,9 +122,14 @@ _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline"
 # "edit" and "edit_mode" are older/alternate API feature names for the same mode.
 # "agent_edit" is included here because the GitHub API uses it to capture lines
 # added and deleted when Copilot writes changes directly into files in BOTH
-# agent mode AND edit mode (per API docs).  loc_suggested_to_add_sum and
-# loc_added_sum are used as-is from the API so that accepted vs. suggested
-# counts differ correctly when users partially accept edit-mode suggestions.
+# agent mode AND edit mode (per API docs).
+#
+# IMPORTANT: GitHub's API explicitly states that loc_suggested_to_add_sum EXCLUDES
+# agent edits, and agent_edit "may not populate suggestion-style fields".  This means
+# loc_suggested_to_add_sum is always 0 for every edit-mode feature.  To produce a
+# meaningful (non-zero) loc_suggested_edit metric we instead compute it as
+# loc_added_sum + loc_deleted_sum (total lines touched), while loc_added_edit uses
+# only loc_added_sum (lines inserted).  Both values come exclusively from agent_edit.
 _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode", "edit", "edit_mode", "agent_edit"})
 # Agent mode: "chat_panel_agent_mode" is the primary API feature name for agent-mode
 # chat panel interactions; "chat_panel_custom_mode" covers custom-agent selections.
@@ -1095,7 +1100,13 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
         "metrics_loc_suggested_chat_28d": _sum_feature_loc(agg.feature_loc_suggested, _CHAT_FEATURES),
         "metrics_loc_added_chat_28d": _sum_feature_loc(agg.feature_loc_added, _CHAT_FEATURES),
-        "metrics_loc_suggested_edit_28d": _sum_feature_loc(agg.feature_loc_suggested, _EDIT_FEATURES),
+        "metrics_loc_suggested_edit_28d": (
+            # loc_suggested_to_add_sum is always 0 for agent_edit (GitHub API excludes
+            # agent edits from suggestion-style fields).  Use loc_added + loc_deleted
+            # (total lines touched) as the best available proxy for "all proposed edits".
+            _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES)
+            + _sum_feature_loc(agg.feature_loc_deleted, _EDIT_FEATURES)
+        ),
         "metrics_loc_added_edit_28d": _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES),
         "metrics_loc_suggested_agent_28d": _sum_feature_loc(agg.feature_loc_suggested, _AGENT_FEATURES),
         "metrics_loc_added_agent_28d": _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES),
@@ -1226,8 +1237,10 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_added_inline_28d          LOC actually applied from inline completions\n"
         f"  loc_suggested_chat_28d        LOC that Copilot proposed for Chat (Ask mode, inline chat)\n"
         f"  loc_added_chat_28d            LOC actually applied from Chat suggestions\n"
-        f"  loc_suggested_edit_28d        LOC that Copilot proposed for Edit mode\n"
-        f"  loc_added_edit_28d            LOC actually applied from Edit mode\n"
+        f"  loc_suggested_edit_28d        Total LOC touched by Edit mode (lines added + deleted); best proxy\n"
+        f"                                for all proposed edits since the API does not expose pre-acceptance\n"
+        f"                                line counts for agent/edit mode\n"
+        f"  loc_added_edit_28d            LOC inserted (lines added only) from Edit mode\n"
         f"  loc_suggested_agent_28d       LOC that Copilot proposed for Agent mode\n"
         f"  loc_added_agent_28d           LOC actually applied by Agent mode (includes autonomous file edits)\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
