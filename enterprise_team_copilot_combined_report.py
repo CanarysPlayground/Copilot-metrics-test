@@ -106,12 +106,6 @@ SESSION = requests.Session()
 # Default feature name for rows with missing or invalid feature data
 DEFAULT_FEATURE_NAME = "unknown"
 
-# Features to exclude from inline completion acceptance rate calculation
-# Edit and Agent features add code directly without traditional suggestions,
-# so they shouldn't be included when calculating inline completion acceptance rate.
-# Using a set for O(1) lookup performance.
-EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent", "agent_edit"}
-
 # Feature categories for per-mode LOC reporting.
 # Keys must match normalized (lowercase) feature names from the API.
 # Inline completions: ghost-text code suggestions in the IDE editor.
@@ -133,14 +127,30 @@ _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline"
 # of a proxy.
 _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode", "edit", "edit_mode"})
 # Agent mode: "chat_panel_agent_mode" is the primary API feature name for agent-mode
-# chat panel interactions; "chat_panel_custom_mode" covers custom-agent selections.
-# "agent_edit" captures file edits written directly into the IDE by BOTH agent mode
-# and edit mode.  Because the API cannot separate these, and GitHub classifies all
-# agent_edit writes as "agent-initiated", it is placed here only (not in _EDIT_FEATURES).
-# loc_suggested_to_add_sum is always 0 for agent_edit, so loc_suggested_agent uses
-# loc_added_sum + loc_deleted_sum (total lines touched) as the best available proxy.
-# "agent" is kept as a fallback for older or alternate API response shapes.
-_AGENT_FEATURES: frozenset[str] = frozenset({"chat_panel_agent_mode", "chat_panel_custom_mode", "agent", "agent_edit"})
+# chat panel interactions; "chat_panel_plan_mode" covers plan-mode (added March 2026,
+# where Copilot creates a step-by-step plan before executing agent-like file writes);
+# "chat_panel_custom_mode" covers custom-agent selections.
+# "agent_edit" captures file edits written directly into the IDE by agent, plan, and
+# edit modes.  Because the API cannot separate these per mode, and GitHub classifies
+# all agent_edit writes as "agent-initiated", it is placed here only (not in
+# _EDIT_FEATURES).  loc_suggested_to_add_sum is always 0 for agent_edit, so
+# loc_suggested_agent uses loc_added_sum + loc_deleted_sum (total lines touched) as
+# the best available proxy.  "agent" is kept as a fallback for older API shapes.
+_AGENT_FEATURES: frozenset[str] = frozenset({
+    "chat_panel_agent_mode",
+    "chat_panel_plan_mode",
+    "chat_panel_custom_mode",
+    "agent",
+    "agent_edit",
+})
+
+# Features to exclude from inline completion acceptance rate calculation.
+# Edit, Agent, and Plan features add code directly into files without going through
+# the traditional ghost-text suggestion → acceptance flow, so they must not be
+# included when calculating the inline LOC acceptance rate.
+# Derived from _EDIT_FEATURES | _AGENT_FEATURES so this set stays in sync with
+# the mode definitions above whenever new features are added.
+EXCLUDED_FEATURES_FOR_INLINE_PCT: frozenset[str] = _EDIT_FEATURES | _AGENT_FEATURES
 
 # -------------------------
 # HTTP helpers
@@ -786,6 +796,7 @@ def format_feature_name(raw: str) -> str:
     overrides = {
         "Chat Inline": "Inline Chat",
         "Agent": "Agent",
+        "Plan": "Plan",
         "Ask": "Ask",
         "Edit": "Edit",
         "Custom": "Custom",
@@ -1120,16 +1131,17 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             # loc_suggested_to_add_sum is 0 for agent_edit (the GitHub API excludes
             # direct file writes from suggestion-style fields).  Use loc_added + loc_deleted
             # (total lines touched by Copilot in files) as the best available proxy for
-            # "all lines Copilot proposed" in agent mode.  This includes file writes from
-            # both agent mode and edit mode since agent_edit cannot be split by mode.
+            # "all lines Copilot proposed" in agent/plan mode.  This includes file writes
+            # from agent, plan, and edit modes since agent_edit cannot be split by mode.
             _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
             + _sum_feature_loc(agg.feature_loc_deleted, _AGENT_FEATURES)
         ),
         "metrics_loc_added_agent_28d": (
             # loc_added_sum for agent features captures: (a) code-block lines the user
-            # applied from the agent-mode chat panel, and (b) all lines written directly
-            # to files by Copilot in agent/edit mode (via agent_edit).  This is the
-            # best available measure of "lines the user accepted" from agent mode.
+            # applied from the agent/plan-mode chat panel, and (b) all lines written
+            # directly to files by Copilot in agent, plan, or edit mode (via agent_edit).
+            # This is the best available measure of "lines the user accepted" from
+            # agent/plan mode.
             _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
         ),
         "metrics_top_model_28d": top_key(agg.model_counts),
@@ -1254,7 +1266,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  loc_suggested_28d       Lines of Code (LOC) that Copilot proposed (mainly inline completions)\n"
         f"  loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
         f"  loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
-        f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent\n"
+        f"  loc_acceptance_pct_inline_28d  Inline acceptance rate: (added/suggested)×100, excludes edit/agent/plan\n"
         f"  loc_suggested_inline_28d      LOC that Copilot proposed for inline completions (ghost-text)\n"
         f"  loc_added_inline_28d          LOC actually applied from inline completions\n"
         f"  loc_suggested_chat_28d        LOC that Copilot proposed for Chat (Ask mode, inline chat)\n"
@@ -1264,14 +1276,15 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"                                edit-mode chat panel before the user applied them\n"
         f"  loc_added_edit_28d            LOC the user applied from Edit mode (code blocks inserted/copied\n"
         f"                                from the edit-mode chat panel; loc_added_sum)\n"
-        f"  loc_suggested_agent_28d       Total LOC touched by Agent mode (loc_added + loc_deleted proxy\n"
+        f"  loc_suggested_agent_28d       Total LOC touched by Agent/Plan mode (loc_added + loc_deleted proxy\n"
         f"                                for agent_edit file writes + chat panel activity); agent_edit\n"
-        f"                                covers both agent and edit mode file writes combined\n"
-        f"  loc_added_agent_28d           LOC applied in Agent mode (chat panel code blocks applied +\n"
+        f"                                covers agent, plan, and edit mode file writes combined;\n"
+        f"                                chat_panel_plan_mode (plan mode, added March 2026) is grouped here\n"
+        f"  loc_added_agent_28d           LOC applied in Agent/Plan mode (chat panel code blocks applied +\n"
         f"                                all file writes via agent_edit; loc_added_sum)\n"
         f"  top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  top_language_28d        Programming language with highest Copilot activity\n"
-        f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Ask, Edit)\n\n"
+        f"  top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Plan, Ask, Edit)\n\n"
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
