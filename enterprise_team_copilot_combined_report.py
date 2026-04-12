@@ -119,7 +119,8 @@ _INLINE_FEATURES: frozenset[str] = frozenset({"code_completion"})
 # Chat (Ask mode): user-initiated chat panel prompts and inline chat sessions.
 _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
 # Edit mode: chat-panel edit mode where Copilot proposes diffs for user review.
-_EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode"})
+# "edit" and "edit_mode" are older/alternate API feature names for the same mode.
+_EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode", "edit", "edit_mode"})
 # Agent mode: "chat_panel_agent_mode" is the primary API feature name for agent-mode
 # chat panel interactions; "chat_panel_custom_mode" covers custom-agent selections.
 # "agent_edit" captures autonomous file edits written directly into the IDE by the
@@ -977,7 +978,13 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 loc_suggested_val = to_num(f.get("loc_suggested_to_add_sum"))
                 loc_added_val = to_num(f.get("loc_added_sum"))
                 loc_deleted_val = to_num(f.get("loc_deleted_sum"))
-                
+                # For agent_edit, the agent writes changes directly to files without a
+                # traditional suggestion step, so loc_suggested_to_add_sum is 0 per the
+                # GitHub API.  Use loc_added_sum as the effective suggested count so that
+                # loc_suggested_agent is never less than loc_added_agent.
+                if feat == "agent_edit" and loc_suggested_val == 0:
+                    loc_suggested_val = loc_added_val
+
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
                 agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
@@ -998,7 +1005,13 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
             loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
             loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
-            
+            # For agent_edit, the agent writes changes directly to files without a
+            # traditional suggestion step, so loc_suggested_to_add_sum is 0 per the
+            # GitHub API.  Use loc_added_sum as the effective suggested count so that
+            # loc_suggested_agent is never less than loc_added_agent.
+            if feat == "agent_edit" and loc_suggested_val == 0:
+                loc_suggested_val = loc_added_val
+
             agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
             agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
             agg.feature_loc_deleted[feat] = agg.feature_loc_deleted.get(feat, 0.0) + loc_deleted_val
