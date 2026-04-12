@@ -110,7 +110,7 @@ DEFAULT_FEATURE_NAME = "unknown"
 # Edit and Agent features add code directly without traditional suggestions,
 # so they shouldn't be included when calculating inline completion acceptance rate.
 # Using a set for O(1) lookup performance.
-EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent"}
+EXCLUDED_FEATURES_FOR_INLINE_PCT = {"edit", "edit_mode", "agent", "agent_edit"}
 
 # Feature categories for per-mode LOC reporting.
 # Keys must match normalized (lowercase) feature names from the API.
@@ -120,8 +120,11 @@ _INLINE_FEATURES: frozenset[str] = frozenset({"code_completion"})
 _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
 # Edit mode: chat-panel edit mode where Copilot proposes diffs for user review.
 _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode"})
-# Agent mode: only autonomous agent edits (agent_edit) are counted.
-_AGENT_FEATURES: frozenset[str] = frozenset({"agent_edit"})
+# Agent mode: "agent" covers all agent-mode rows; "agent_edit" covers autonomous
+# file edits emitted as a separate feature in some API response shapes.
+# Both must be included so that loc_suggested (all files Copilot proposed) and
+# loc_added (files the user kept) are correctly captured.
+_AGENT_FEATURES: frozenset[str] = frozenset({"agent", "agent_edit"})
 
 # -------------------------
 # HTTP helpers
