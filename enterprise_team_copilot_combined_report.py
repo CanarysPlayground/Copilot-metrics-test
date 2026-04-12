@@ -120,11 +120,13 @@ _INLINE_FEATURES: frozenset[str] = frozenset({"code_completion"})
 _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline", "chat_panel_unknown_mode"})
 # Edit mode: chat-panel edit mode where Copilot proposes diffs for user review.
 _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode"})
-# Agent mode: "agent" covers all agent-mode rows; "agent_edit" covers autonomous
-# file edits emitted as a separate feature in some API response shapes.
-# Both must be included so that loc_suggested (all files Copilot proposed) and
-# loc_added (files the user kept) are correctly captured.
-_AGENT_FEATURES: frozenset[str] = frozenset({"agent", "agent_edit"})
+# Agent mode: "chat_panel_agent_mode" is the primary API feature name for agent-mode
+# chat panel interactions; "chat_panel_custom_mode" covers custom-agent selections.
+# "agent_edit" captures autonomous file edits written directly into the IDE by the
+# agent (loc_suggested_to_add_sum is excluded for agent_edit per API docs, but
+# loc_added_sum/loc_deleted_sum are populated).  "agent" is kept as a fallback for
+# older or alternate API response shapes.
+_AGENT_FEATURES: frozenset[str] = frozenset({"chat_panel_agent_mode", "chat_panel_custom_mode", "agent", "agent_edit"})
 
 # -------------------------
 # HTTP helpers
