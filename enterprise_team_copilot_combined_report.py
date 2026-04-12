@@ -122,17 +122,15 @@ _CHAT_FEATURES: frozenset[str] = frozenset({"chat_panel_ask_mode", "chat_inline"
 # "edit" and "edit_mode" are older/alternate API feature names for the same mode.
 # "agent_edit" is included here because the GitHub API uses it to capture lines
 # added and deleted when Copilot writes changes directly into files in BOTH
-# agent mode AND edit mode (per API docs).  The chat_panel_edit_mode entries in
-# totals_by_feature carry only interaction counts; the actual edit-mode LOC is
-# reported under agent_edit, so it must be included in _EDIT_FEATURES to populate
-# metrics_loc_suggested_edit_28d and metrics_loc_added_edit_28d correctly.
+# agent mode AND edit mode (per API docs).  loc_suggested_to_add_sum and
+# loc_added_sum are used as-is from the API so that accepted vs. suggested
+# counts differ correctly when users partially accept edit-mode suggestions.
 _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode", "edit", "edit_mode", "agent_edit"})
 # Agent mode: "chat_panel_agent_mode" is the primary API feature name for agent-mode
 # chat panel interactions; "chat_panel_custom_mode" covers custom-agent selections.
 # "agent_edit" captures file edits written directly into the IDE by both agent
-# and edit mode (loc_suggested_to_add_sum is excluded for agent_edit per API docs,
-# but loc_added_sum/loc_deleted_sum are populated).  Because agent_edit covers both
-# agent and edit mode writes it also appears in _EDIT_FEATURES above.
+# and edit mode.  Because agent_edit covers both agent and edit mode writes it
+# also appears in _EDIT_FEATURES above.
 # "agent" is kept as a fallback for older or alternate API response shapes.
 _AGENT_FEATURES: frozenset[str] = frozenset({"chat_panel_agent_mode", "chat_panel_custom_mode", "agent", "agent_edit"})
 
@@ -987,13 +985,6 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 loc_suggested_val = get_loc_field_value(f, "loc_suggested_to_add_sum", "loc_suggested")
                 loc_added_val = get_loc_field_value(f, "loc_added_sum", "loc_added")
                 loc_deleted_val = get_loc_field_value(f, "loc_deleted_sum", "loc_deleted")
-                # For agent_edit, Copilot writes changes directly to files (for both
-                # agent and edit mode) without a traditional suggestion step, so
-                # loc_suggested_to_add_sum is 0 per the GitHub API.  Use loc_added_sum
-                # as the effective suggested count so that loc_suggested is never less
-                # than loc_added for these features.
-                if feat == "agent_edit" and loc_suggested_val == 0:
-                    loc_suggested_val = loc_added_val
 
                 agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
                 agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
@@ -1015,13 +1006,6 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             loc_suggested_val = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
             loc_added_val = get_loc_field_value(r, "loc_added_sum", "loc_added")
             loc_deleted_val = get_loc_field_value(r, "loc_deleted_sum", "loc_deleted")
-            # For agent_edit, Copilot writes changes directly to files (for both
-            # agent and edit mode) without a traditional suggestion step, so
-            # loc_suggested_to_add_sum is 0 per the GitHub API.  Use loc_added_sum
-            # as the effective suggested count so that loc_suggested is never less
-            # than loc_added for these features.
-            if feat == "agent_edit" and loc_suggested_val == 0:
-                loc_suggested_val = loc_added_val
 
             agg.feature_loc_suggested[feat] = agg.feature_loc_suggested.get(feat, 0.0) + loc_suggested_val
             agg.feature_loc_added[feat] = agg.feature_loc_added.get(feat, 0.0) + loc_added_val
