@@ -133,9 +133,7 @@ _EDIT_FEATURES: frozenset[str] = frozenset({"chat_panel_edit_mode", "edit", "edi
 # "agent_edit" captures file edits written directly into the IDE by agent, plan, and
 # edit modes.  Because the API cannot separate these per mode, and GitHub classifies
 # all agent_edit writes as "agent-initiated", it is placed here only (not in
-# _EDIT_FEATURES).  loc_suggested_to_add_sum is always 0 for agent_edit, so
-# loc_suggested_agent uses loc_added_sum + loc_deleted_sum (total lines touched) as
-# the best available proxy.  "agent" is kept as a fallback for older API shapes.
+# _EDIT_FEATURES).  "agent" is kept as a fallback for older API shapes.
 _AGENT_FEATURES: frozenset[str] = frozenset({
     "chat_panel_agent_mode",
     "chat_panel_plan_mode",
@@ -143,6 +141,13 @@ _AGENT_FEATURES: frozenset[str] = frozenset({
     "agent",
     "agent_edit",
 })
+# Per the GitHub public API docs, loc_suggested_to_add_sum is explicitly 0 only for
+# "agent_edit" (direct file writes that bypass the suggestion UI).  All other agent
+# features — chat_panel_agent_mode, chat_panel_plan_mode, chat_panel_custom_mode, agent
+# — use the chat panel and DO populate loc_suggested_to_add_sum with real data.
+# The loc_added + loc_deleted proxy therefore applies only to agent_edit.
+_AGENT_FILE_WRITE_FEATURES: frozenset[str] = frozenset({"agent_edit"})
+_AGENT_CHAT_PANEL_FEATURES: frozenset[str] = _AGENT_FEATURES - _AGENT_FILE_WRITE_FEATURES
 
 # -------------------------
 # HTTP helpers
@@ -1082,18 +1087,25 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     chat_loc_added = _sum_feature_loc(agg.feature_loc_added, _CHAT_FEATURES)
     edit_loc_suggested = _sum_feature_loc(agg.feature_loc_suggested, _EDIT_FEATURES)
     edit_loc_added = _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES)
-    # Agent: loc_suggested_to_add_sum is 0 for agent_edit (direct file writes bypass the
-    # ghost-text suggestion flow).  Use loc_added + loc_deleted as the best available proxy
-    # for "lines Copilot proposed" in agent/plan mode.
+    # Agent suggested LOC:
+    #   - Chat-panel agent features (chat_panel_agent_mode, chat_panel_plan_mode,
+    #     chat_panel_custom_mode, agent): the API populates loc_suggested_to_add_sum with
+    #     real data (lines shown in the chat panel before the user applies them).  Use the
+    #     actual API value directly.
+    #   - agent_edit (direct file writes): loc_suggested_to_add_sum is always 0 because
+    #     Copilot writes changes straight into files, bypassing the suggestion UI.  Use
+    #     loc_added_sum + loc_deleted_sum (total lines touched) as the best available proxy.
     agent_loc_suggested = (
-        _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
-        + _sum_feature_loc(agg.feature_loc_deleted, _AGENT_FEATURES)
+        _sum_feature_loc(agg.feature_loc_suggested, _AGENT_CHAT_PANEL_FEATURES)
+        + _sum_feature_loc(agg.feature_loc_added, _AGENT_FILE_WRITE_FEATURES)
+        + _sum_feature_loc(agg.feature_loc_deleted, _AGENT_FILE_WRITE_FEATURES)
     )
     agent_loc_added = _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
 
     # NOTE: metrics_loc_suggested_28d is computed as the sum of its four breakdown columns
     # (inline + chat + edit + agent) so that the total always equals the sum of parts.
-    # The agent portion uses loc_added + loc_deleted as a proxy (see comment above).
+    # The agent portion uses real API data for chat-panel features and loc_added + loc_deleted
+    # as a proxy only for agent_edit (see comment above).
     # For accurate acceptance percentage, use: metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d
     return {
         "metrics_interactions_28d": int(agg.interactions),
@@ -1114,9 +1126,10 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         # in the edit-mode chat panel before the user applied them.
         "metrics_loc_suggested_edit_28d": edit_loc_suggested,
         "metrics_loc_added_edit_28d": edit_loc_added,
-        # Agent: loc_suggested_to_add_sum is 0 for agent_edit (direct file writes bypass
-        # the ghost-text suggestion flow).  loc_added + loc_deleted is used as a proxy
-        # for "lines Copilot proposed" in agent/plan mode and is reflected in the total.
+        # Agent: for chat-panel agent features (chat_panel_agent_mode, chat_panel_plan_mode,
+        # chat_panel_custom_mode, agent) the API populates loc_suggested_to_add_sum with real
+        # data and is used directly.  For agent_edit (direct file writes) loc_suggested_to_add_sum
+        # is always 0, so loc_added + loc_deleted is used as a proxy for lines Copilot touched.
         "metrics_loc_suggested_agent_28d": agent_loc_suggested,
         # loc_added_sum for agent features captures code applied from the agent/plan-mode
         # chat panel and all lines written directly to files (via agent_edit).
@@ -1240,7 +1253,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_acceptances_28d         Number of times the user accepted a Copilot suggestion\n"
         f"  metrics_acceptance_pct_28d      Acceptance rate: (acceptances / completions) × 100 %\n"
         f"  metrics_days_active_28d         Distinct calendar days with at least one Copilot interaction\n"
-        f"  metrics_loc_suggested_28d       LOC Copilot proposed (= inline + chat + edit + agent; agent uses loc_added+loc_deleted proxy)\n"
+        f"  metrics_loc_suggested_28d       LOC Copilot proposed (= inline + chat + edit + agent; agent_edit uses loc_added+loc_deleted proxy)\n"
         f"  metrics_loc_added_28d           LOC applied from Copilot (= inline + chat + edit + agent)\n"
         f"  metrics_loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  metrics_loc_suggested_inline_28d      LOC proposed for inline completions (ghost-text; code_completion feature only)\n"
@@ -1253,10 +1266,11 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"                                        edit-mode chat panel before the user applied them\n"
         f"  metrics_loc_added_edit_28d            LOC the user applied from Edit mode (code blocks inserted/copied\n"
         f"                                        from the edit-mode chat panel; loc_added_sum)\n"
-        f"  metrics_loc_suggested_agent_28d       Total LOC touched by Agent/Plan mode (loc_added + loc_deleted proxy\n"
-        f"                                        for agent_edit file writes + chat panel activity); agent_edit\n"
-        f"                                        covers agent, plan, and edit mode file writes combined;\n"
-        f"                                        chat_panel_plan_mode (plan mode, added March 2026) is grouped here\n"
+        f"  metrics_loc_suggested_agent_28d       LOC proposed by Agent/Plan mode. Chat-panel agent features\n"
+        f"                                        (chat_panel_agent_mode, chat_panel_plan_mode,\n"
+        f"                                        chat_panel_custom_mode) use loc_suggested_to_add_sum directly\n"
+        f"                                        from the API. agent_edit (direct file writes, which bypass the\n"
+        f"                                        suggestion UI) uses loc_added + loc_deleted as a proxy.\n"
         f"  metrics_loc_added_agent_28d           LOC applied in Agent/Plan mode (chat panel code blocks applied +\n"
         f"                                        all file writes via agent_edit; loc_added_sum)\n"
         f"  metrics_top_model_28d           AI model used most often (e.g. gpt-4o)\n"
@@ -1267,12 +1281,14 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
-        f"For agent/plan mode the GitHub API returns 0 for loc_suggested_to_add_sum\n"
-        f"(direct file writes bypass the ghost-text suggestion flow).  The report uses\n"
-        f"loc_added + loc_deleted as a proxy so the total and four breakdown columns\n"
-        f"stay consistent.  Heavy agent use can still make loc_added exceed loc_suggested\n"
-        f"because loc_added counts every line written, while the agent proxy only reflects\n"
-        f"lines touched (added + deleted).  This is expected and not a data error.\n"
+        f"For agent_edit (direct file writes) the GitHub API returns 0 for\n"
+        f"loc_suggested_to_add_sum because Copilot writes changes straight into files,\n"
+        f"bypassing the suggestion UI.  The report uses loc_added + loc_deleted as a\n"
+        f"proxy for that component only.  Chat-panel agent features use the real API\n"
+        f"loc_suggested_to_add_sum value.  Heavy agent_edit use can still make\n"
+        f"loc_added exceed loc_suggested because loc_added counts every line written,\n"
+        f"while the agent_edit proxy reflects lines touched (added + deleted).\n"
+        f"This is expected and not a data error.\n"
     )
 
     missing = [
