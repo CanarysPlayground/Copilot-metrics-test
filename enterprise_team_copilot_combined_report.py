@@ -144,14 +144,6 @@ _AGENT_FEATURES: frozenset[str] = frozenset({
     "agent_edit",
 })
 
-# Features to exclude from inline completion acceptance rate calculation.
-# Edit, Agent, and Plan features add code directly into files without going through
-# the traditional ghost-text suggestion → acceptance flow, so they must not be
-# included when calculating the inline LOC acceptance rate.
-# Derived from _EDIT_FEATURES | _AGENT_FEATURES so this set stays in sync with
-# the mode definitions above whenever new features are added.
-EXCLUDED_FEATURES_FOR_INLINE_PCT: frozenset[str] = _EDIT_FEATURES | _AGENT_FEATURES
-
 # -------------------------
 # HTTP helpers
 # -------------------------
@@ -1070,80 +1062,65 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
     
-    # Calculate inline-only LoC acceptance percentage (excluding edit and agent features).
-    # This measures the traditional acceptance rate: what percentage of suggested code was accepted.
+    # Calculate inline-only LoC metrics (code_completion ghost-text suggestions only).
+    # Only _INLINE_FEATURES (code_completion) is included here.  Chat, edit, and agent
+    # features are tracked separately in their own breakdown columns; including them here
+    # would double-count them when a caller sums the four breakdown columns.
     # Formula: (added / suggested) × 100
     # - Example: Copilot suggested 100 lines, developer accepted 80 lines → 80%
     # - Example: Copilot suggested 100 lines, developer accepted and expanded to 150 lines → 150%
     # Note: Values >100% indicate the developer accepted the suggestion and added more code on top.
-    # 
-    # Two filters are applied:
-    # 1. Exclude edit/agent features (EXCLUDED_FEATURES_FOR_INLINE_PCT) - these features don't use
-    #    ghost-text suggestions and should not be included in inline completion metrics
-    # 2. Only include features where suggested > 0 - avoids division by zero and ensures we only
-    #    measure features that actually showed suggestions
-    inline_loc_suggested = 0.0
-    inline_loc_added = 0.0
-    
-    for feat, suggested in agg.feature_loc_suggested.items():
-        if feat not in EXCLUDED_FEATURES_FOR_INLINE_PCT and suggested > 0:
-            inline_loc_suggested += suggested
-            inline_loc_added += agg.feature_loc_added.get(feat, 0.0)
-    
+    inline_loc_suggested = int(sum(agg.feature_loc_suggested.get(feat, 0.0) for feat in _INLINE_FEATURES))
+    inline_loc_added = int(sum(agg.feature_loc_added.get(feat, 0.0) for feat in _INLINE_FEATURES))
+
     # Calculate traditional acceptance rate: what % of suggested code was accepted/added
     loc_acceptance_pct_inline = (inline_loc_added / inline_loc_suggested * 100.0) if inline_loc_suggested > 0 else 0.0
 
-    # NOTE: The output includes both total LOC metrics and inline-only LOC metrics:
-    # - metrics_loc_*_28d: Total across ALL features (includes edit, agent, inline)
-    # - metrics_loc_*_inline_28d: Only inline completions (excludes edit, agent)
-    # - metrics_loc_acceptance_pct_inline_28d: Calculated using inline-only values
-    #
+    # Pre-compute per-category values used in both the total and breakdown columns so the
+    # total is always identical to the sum of its parts.
+    chat_loc_suggested = _sum_feature_loc(agg.feature_loc_suggested, _CHAT_FEATURES)
+    chat_loc_added = _sum_feature_loc(agg.feature_loc_added, _CHAT_FEATURES)
+    edit_loc_suggested = _sum_feature_loc(agg.feature_loc_suggested, _EDIT_FEATURES)
+    edit_loc_added = _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES)
+    # Agent: loc_suggested_to_add_sum is 0 for agent_edit (direct file writes bypass the
+    # ghost-text suggestion flow).  Use loc_added + loc_deleted as the best available proxy
+    # for "lines Copilot proposed" in agent/plan mode.
+    agent_loc_suggested = (
+        _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
+        + _sum_feature_loc(agg.feature_loc_deleted, _AGENT_FEATURES)
+    )
+    agent_loc_added = _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
+
+    # NOTE: metrics_loc_suggested_28d is computed as the sum of its four breakdown columns
+    # (inline + chat + edit + agent) so that the total always equals the sum of parts.
+    # The agent portion uses loc_added + loc_deleted as a proxy (see comment above).
     # For accurate acceptance percentage, use: metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d
-    # Do NOT calculate as: metrics_loc_added_28d / metrics_loc_suggested_28d (will be incorrect)
     return {
         "metrics_interactions_28d": int(agg.interactions),
         "metrics_completions_28d": int(agg.completions),
         "metrics_acceptances_28d": int(agg.acceptances),
         "metrics_acceptance_pct_28d": round(acceptance_pct, 2),
         "metrics_days_active_28d": len(agg.days),
-        "metrics_loc_suggested_28d": int(agg.loc_suggested),
-        "metrics_loc_added_28d": int(agg.loc_added),
+        "metrics_loc_suggested_28d": inline_loc_suggested + chat_loc_suggested + edit_loc_suggested + agent_loc_suggested,
+        "metrics_loc_added_28d": inline_loc_added + chat_loc_added + edit_loc_added + agent_loc_added,
         "metrics_loc_deleted_28d": int(agg.loc_deleted),
-        "metrics_loc_suggested_inline_28d": int(inline_loc_suggested),
-        "metrics_loc_added_inline_28d": int(inline_loc_added),
+        "metrics_loc_suggested_inline_28d": inline_loc_suggested,
+        "metrics_loc_added_inline_28d": inline_loc_added,
         "metrics_loc_acceptance_pct_inline_28d": round(loc_acceptance_pct_inline, 2),
-        "metrics_loc_suggested_chat_28d": _sum_feature_loc(agg.feature_loc_suggested, _CHAT_FEATURES),
-        "metrics_loc_added_chat_28d": _sum_feature_loc(agg.feature_loc_added, _CHAT_FEATURES),
-        "metrics_loc_suggested_edit_28d": (
-            # chat_panel_edit_mode (and legacy "edit"/"edit_mode") populate
-            # loc_suggested_to_add_sum with the code-block lines that Copilot showed
-            # in the edit-mode chat panel before the user applied them.  This is the
-            # real "suggested" count for edit mode.  agent_edit is intentionally excluded
-            # from _EDIT_FEATURES (it covers both modes and is attributed to agent metrics).
-            _sum_feature_loc(agg.feature_loc_suggested, _EDIT_FEATURES)
-        ),
-        "metrics_loc_added_edit_28d": (
-            # loc_added_sum for edit-mode chat features counts code-block lines the user
-            # explicitly applied (insert/copy/apply) from the edit-mode chat panel.
-            _sum_feature_loc(agg.feature_loc_added, _EDIT_FEATURES)
-        ),
-        "metrics_loc_suggested_agent_28d": (
-            # loc_suggested_to_add_sum is 0 for agent_edit (the GitHub API excludes
-            # direct file writes from suggestion-style fields).  Use loc_added + loc_deleted
-            # (total lines touched by Copilot in files) as the best available proxy for
-            # "all lines Copilot proposed" in agent/plan mode.  This includes file writes
-            # from agent, plan, and edit modes since agent_edit cannot be split by mode.
-            _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
-            + _sum_feature_loc(agg.feature_loc_deleted, _AGENT_FEATURES)
-        ),
-        "metrics_loc_added_agent_28d": (
-            # loc_added_sum for agent features captures: (a) code-block lines the user
-            # applied from the agent/plan-mode chat panel, and (b) all lines written
-            # directly to files by Copilot in agent, plan, or edit mode (via agent_edit).
-            # This is the best available measure of "lines the user accepted" from
-            # agent/plan mode.
-            _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
-        ),
+        "metrics_loc_suggested_chat_28d": chat_loc_suggested,
+        "metrics_loc_added_chat_28d": chat_loc_added,
+        # chat_panel_edit_mode (and legacy "edit"/"edit_mode") populate
+        # loc_suggested_to_add_sum with the code-block lines that Copilot showed
+        # in the edit-mode chat panel before the user applied them.
+        "metrics_loc_suggested_edit_28d": edit_loc_suggested,
+        "metrics_loc_added_edit_28d": edit_loc_added,
+        # Agent: loc_suggested_to_add_sum is 0 for agent_edit (direct file writes bypass
+        # the ghost-text suggestion flow).  loc_added + loc_deleted is used as a proxy
+        # for "lines Copilot proposed" in agent/plan mode and is reflected in the total.
+        "metrics_loc_suggested_agent_28d": agent_loc_suggested,
+        # loc_added_sum for agent features captures code applied from the agent/plan-mode
+        # chat panel and all lines written directly to files (via agent_edit).
+        "metrics_loc_added_agent_28d": agent_loc_added,
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
@@ -1263,14 +1240,14 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_acceptances_28d         Number of times the user accepted a Copilot suggestion\n"
         f"  metrics_acceptance_pct_28d      Acceptance rate: (acceptances / completions) × 100 %\n"
         f"  metrics_days_active_28d         Distinct calendar days with at least one Copilot interaction\n"
-        f"  metrics_loc_suggested_28d       LOC that Copilot proposed across all features (inline + Chat/Edit/Agent)\n"
-        f"  metrics_loc_added_28d           LOC actually applied from Copilot (all features: completions + Chat/Edit/Agent)\n"
+        f"  metrics_loc_suggested_28d       LOC Copilot proposed (= inline + chat + edit + agent; agent uses loc_added+loc_deleted proxy)\n"
+        f"  metrics_loc_added_28d           LOC applied from Copilot (= inline + chat + edit + agent)\n"
         f"  metrics_loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
-        f"  metrics_loc_suggested_inline_28d      LOC that Copilot proposed for inline completions (ghost-text)\n"
-        f"  metrics_loc_added_inline_28d          LOC actually applied from inline completions\n"
-        f"  metrics_loc_acceptance_pct_inline_28d Inline acceptance rate: (added/suggested)×100, excludes edit/agent/plan\n"
-        f"  metrics_loc_suggested_chat_28d        LOC that Copilot proposed for Chat (Ask mode, inline chat)\n"
-        f"  metrics_loc_added_chat_28d            LOC actually applied from Chat suggestions\n"
+        f"  metrics_loc_suggested_inline_28d      LOC proposed for inline completions (ghost-text; code_completion feature only)\n"
+        f"  metrics_loc_added_inline_28d          LOC applied from inline completions\n"
+        f"  metrics_loc_acceptance_pct_inline_28d Inline acceptance rate: (added/suggested)×100 (ghost-text only)\n"
+        f"  metrics_loc_suggested_chat_28d        LOC proposed for Chat (Ask mode, inline chat)\n"
+        f"  metrics_loc_added_chat_28d            LOC applied from Chat suggestions\n"
         f"  metrics_loc_suggested_edit_28d        LOC that Copilot proposed in Edit mode (loc_suggested_to_add_sum\n"
         f"                                        from chat_panel_edit_mode); represents code blocks shown in the\n"
         f"                                        edit-mode chat panel before the user applied them\n"
@@ -1290,11 +1267,12 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
-        f"loc_suggested counts lines proposed in inline completion ghost-text suggestions.\n"
-        f"loc_added counts ALL lines applied from Copilot across every feature, including\n"
-        f"Copilot Chat (Ask), Edit, and Agent — where code is applied directly without a\n"
-        f"traditional ghost-text suggestion. Heavy use of Chat/Edit/Agent therefore causes\n"
-        f"loc_added to exceed loc_suggested, which is expected and not a data error.\n"
+        f"For agent/plan mode the GitHub API returns 0 for loc_suggested_to_add_sum\n"
+        f"(direct file writes bypass the ghost-text suggestion flow).  The report uses\n"
+        f"loc_added + loc_deleted as a proxy so the total and four breakdown columns\n"
+        f"stay consistent.  Heavy agent use can still make loc_added exceed loc_suggested\n"
+        f"because loc_added counts every line written, while the agent proxy only reflects\n"
+        f"lines touched (added + deleted).  This is expected and not a data error.\n"
     )
 
     missing = [

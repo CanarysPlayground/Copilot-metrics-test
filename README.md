@@ -465,12 +465,12 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_acceptances_28d` | Number of times the user accepted a Copilot code suggestion |
 | `metrics_acceptance_pct_28d` | Acceptance rate as a percentage: `(acceptances / completions) × 100`. Indicates how relevant Copilot's suggestions are to the user |
 | `metrics_days_active_28d` | Number of distinct calendar days (UTC) the user had at least one Copilot interaction in the period |
-| `metrics_loc_suggested_28d` | **Lines of Code (LOC) suggested** — total lines of code that Copilot proposed to the user across all features. Populated primarily by inline code-completion suggestions |
-| `metrics_loc_added_28d` | **Lines of Code (LOC) added** — total lines of code that the user actually added from Copilot-generated content (i.e., accepted and applied suggestions/responses) |
+| `metrics_loc_suggested_28d` | **Lines of Code (LOC) suggested** — total lines of code that Copilot proposed to the user across all features. Equals the sum of `metrics_loc_suggested_inline_28d` + `metrics_loc_suggested_chat_28d` + `metrics_loc_suggested_edit_28d` + `metrics_loc_suggested_agent_28d` |
+| `metrics_loc_added_28d` | **Lines of Code (LOC) added** — total lines of code that the user actually added from Copilot-generated content. Equals the sum of the four feature-level `metrics_loc_added_*_28d` columns |
 | `metrics_loc_deleted_28d` | **Lines of Code (LOC) deleted** — total lines of code deleted by the user in Copilot-assisted edits during the period |
-| `metrics_loc_suggested_inline_28d` | **Lines of Code (LOC) suggested (inline only)** — lines suggested by inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
-| `metrics_loc_added_inline_28d` | **Lines of Code (LOC) added (inline only)** — lines added from inline completions only, excluding Edit and Agent features. Use this for accurate acceptance rate calculations |
-| `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100`. This field already existed but now you can see the individual inline-only values used in its calculation |
+| `metrics_loc_suggested_inline_28d` | **Lines of Code (LOC) suggested (inline only)** — lines suggested by inline ghost-text completions (`code_completion` feature) only. Chat, Edit, and Agent are tracked separately. Use this for accurate acceptance rate calculations |
+| `metrics_loc_added_inline_28d` | **Lines of Code (LOC) added (inline only)** — lines added from inline ghost-text completions only. Use this for accurate acceptance rate calculations |
+| `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100` |
 | `premium_requests_complete_month` | **Premium requests (complete month)** — total premium (non-base-model) requests for the full calendar month. Source: GitHub billing API (same value as `billing_premium_requests_month`). Empty when the billing API is unavailable. See [Premium Request Tracking](#premium-request-tracking) for details |
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g., `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g., `python`, `typescript`) |
@@ -484,21 +484,36 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 
 ### LOC Metrics Explained
 
+#### How do the LOC columns relate to each other?
+
+The four feature-level breakdown columns always sum to the total:
+
+```
+metrics_loc_suggested_28d = metrics_loc_suggested_inline_28d
+                           + metrics_loc_suggested_chat_28d
+                           + metrics_loc_suggested_edit_28d
+                           + metrics_loc_suggested_agent_28d
+
+metrics_loc_added_28d     = metrics_loc_added_inline_28d
+                           + metrics_loc_added_chat_28d
+                           + metrics_loc_added_edit_28d
+                           + metrics_loc_added_agent_28d
+```
+
+Each breakdown column covers a distinct set of Copilot features (no overlap):
+
+| Column suffix | Features covered |
+|---|---|
+| `_inline_` | `code_completion` — ghost-text suggestions in the editor |
+| `_chat_` | `chat_panel_ask_mode`, `chat_inline`, `chat_panel_unknown_mode` |
+| `_edit_` | `chat_panel_edit_mode`, `edit`, `edit_mode` |
+| `_agent_` | `chat_panel_agent_mode`, `chat_panel_plan_mode`, `chat_panel_custom_mode`, `agent`, `agent_edit` |
+
 #### Why can `metrics_loc_suggested_28d` be *less than* `metrics_loc_added_28d`?
 
-This is a common and expected observation. The two fields measure **different things**:
+This is expected for heavy Chat/Edit/Agent users. The agent portion of `metrics_loc_suggested_28d` uses `loc_added + loc_deleted` as a proxy (because the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes in agent/plan mode). Meanwhile `loc_added` in agent mode can be very large when Copilot scaffolds entire files. So for users who rely heavily on Agent, `loc_added` will exceed `loc_suggested`.
 
-- **`loc_suggested`** (`loc_suggested_to_add_sum` in the GitHub API) counts lines of code that Copilot *proposed* in a suggestion — this is populated mainly for **inline code completions** where GitHub tracks what was displayed in the ghost-text editor overlay.
-
-- **`loc_added`** (`loc_added_sum` in the GitHub API) counts lines of code that were *actually applied* from a Copilot response — this is aggregated across **all Copilot features**, including:
-  - Inline completions
-  - **Copilot Chat** (Ask)
-  - **Copilot Edit**
-  - **Copilot Agent**
-
-For Chat, Edit, and Agent sessions, Copilot can generate and apply entire blocks of code. These responses contribute to `loc_added` even when `loc_suggested_to_add_sum` is `0` for those feature rows (because there is no traditional ghost-text suggestion for those features).
-
-**Example:** A developer uses Copilot Agent to scaffold a 200-line file. `loc_added` increases by 200, but `loc_suggested` may not increase at all because the agent applied the code directly without a ghost-text suggestion step.
+**Example:** A developer uses Copilot Agent to scaffold a 200-line file. `loc_added` increases by 200 and `loc_deleted` by 50, so the proxy for `loc_suggested_agent` is 250. But `loc_suggested_inline` (ghost-text) may only be 30 lines. The result: `loc_suggested_28d = 280`, `loc_added_28d = 200 + inline_added`.
 
 **Conclusion:** `loc_added ≥ loc_suggested` is the norm for heavy Chat/Edit/Agent users, and is not a data error.
 
@@ -508,19 +523,19 @@ For Chat, Edit, and Agent sessions, Copilot can generate and apply entire blocks
 
 #### The Problem
 
-The total LOC metrics (`metrics_loc_*_28d`) include lines from ALL Copilot features:
-- **Inline completions**: Shows ghost-text suggestions that users can accept/reject
-- **Edit mode**: Applies code changes directly without traditional suggestions
-- **Agent mode**: Generates and applies entire files without traditional suggestions
+The `_agent_` LOC columns use a different calculation than `_inline_`/`_chat_`/`_edit_`:
+
+- **Inline / Chat / Edit**: `loc_suggested` = `loc_suggested_to_add_sum` (lines Copilot displayed as a suggestion)
+- **Agent**: `loc_suggested` = `loc_added + loc_deleted` (proxy — direct file writes bypass the suggestion step)
 
 When you calculate `metrics_loc_added_28d / metrics_loc_suggested_28d`:
-- The numerator includes lines from Edit and Agent (which add code directly)
-- The denominator doesn't include Edit/Agent suggestions (they don't use ghost-text)
-- Result: artificially low or >100% acceptance rates
+- The numerator (`loc_added`) for agent is large (all lines written)
+- The denominator (`loc_suggested`) for agent is also large (same proxy), but they don't cancel cleanly across features
+- Result: acceptance rates are unreliable when mix of inline + agent is present
 
 #### The Solution
 
-Use the **inline-only LOC metrics** which exclude Edit and Agent features:
+Use the **inline-only LOC metrics** which measure only the traditional ghost-text suggestion → accept flow:
 
 **Option 1: Use the pre-calculated field**
 ```
@@ -537,15 +552,15 @@ Acceptance % = (metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d)
 
 | Metric | Total (All Features) | Inline Only |
 |--------|---------------------|-------------|
-| LOC Suggested | 1,000 | 1,000 |
+| LOC Suggested | 1,250 | 1,000 |
 | LOC Added | 1,500 | 800 |
-| **Acceptance %** | **150%** ❌ Incorrect | **80%** ✅ Correct |
+| **Acceptance %** | **120%** ❌ Misleading | **80%** ✅ Correct |
 
 In this example:
 - The user accepted 80% of inline completion suggestions
 - They also used Edit/Agent features which added 700 additional lines
 - The total `metrics_loc_added_28d` (1,500) includes both inline (800) + edit/agent (700)
-- Calculating 1,500 / 1,000 = 150% is misleading
+- Calculating 1,500 / 1,250 = 120% is misleading
 - The correct acceptance rate for inline completions is 800 / 1,000 = 80%
 
 ### Per-Language Breakdown
