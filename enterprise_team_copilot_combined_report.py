@@ -440,7 +440,7 @@ def fetch_monthly_premium_requests_by_login(
     logins: List[str],
     year: int,
     month: int,
-) -> Tuple[Dict[str, float], Dict[str, float]]:
+) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Dict[str, float]]]:
     """Fetch premium request usage and billed amount for a specific calendar month per user.
 
     Calls GET /enterprises/{enterprise}/settings/billing/premium_request/usage
@@ -450,7 +450,7 @@ def fetch_monthly_premium_requests_by_login(
     ``REPORT_YEAR`` and ``REPORT_MONTH`` (which default to the current calendar
     month) so the returned counts cover the whole month from the 1st to the last day.
 
-    Returns a 2-tuple:
+    Returns a 3-tuple:
       - ``premium_requests``: login → total ``grossQuantity`` consumed in *month*/*year*.
         This is the *gross* (pre-deduction) total, i.e. every premium request the user
         made regardless of whether it fell within their included-request quota.  For a
@@ -459,24 +459,31 @@ def fetch_monthly_premium_requests_by_login(
         included-request quota is deducted.  Matches the "Billed amount" column in the
         GitHub billing UI.  For the same user the value is 150 × $0.04 = $6.00.
         0.0 when ``netAmount`` is absent in the response.
+      - ``model_breakdown``:  model_name → dict with keys ``gross_quantity``,
+        ``billed_quantity``, ``gross_amount``, ``net_amount`` aggregated across all users.
+        Mirrors the "Usage breakdown" table in the GitHub billing UI (per-model view).
+        Empty when per-model fields are not present in the API response.
 
-    Both dicts are empty when the endpoint is unavailable (e.g. the token does not have
-    billing-manager scope, or the enterprise does not use the enhanced billing platform).
+    All three dicts are empty when the endpoint is unavailable (e.g. the token does not
+    have billing-manager scope, or the enterprise does not use the enhanced billing
+    platform).
 
     Error-handling policy:
-    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return ({}, {})
+    - HTTP 403 or 501 → the whole endpoint is unavailable; abort and return ({}, {}, {})
       so callers can fall back gracefully.
     - HTTP 400 or 404 for a specific user → that user has no billing record this
       month; record 0 for them and continue with the remaining users.
     - Other non-2xx responses → log a warning, skip that user, continue.
     """
     if not logins:
-        return {}, {}
+        return {}, {}, {}
 
     url = f"{API_BASE}/enterprises/{ENTERPRISE_SLUG}/settings/billing/premium_request/usage"
 
     result: Dict[str, float] = {}
     billed: Dict[str, float] = {}
+    # model_breakdown: model_name -> {gross_quantity, billed_quantity, gross_amount, net_amount}
+    model_breakdown: Dict[str, Dict[str, float]] = {}
     endpoint_available = True
     period_logged = False
 
@@ -539,9 +546,46 @@ def fetch_monthly_premium_requests_by_login(
         for item in usage_items:
             if not isinstance(item, dict):
                 continue
-            total_qty += to_num(item.get("grossQuantity"))
+            gross_qty = to_num(item.get("grossQuantity"))
             # netAmount = actual amount charged after included-request quota → "Billed amount" in GitHub UI.
-            total_billed += to_num(item.get("netAmount"))
+            net_amount = to_num(item.get("netAmount"))
+            total_qty += gross_qty
+            total_billed += net_amount
+
+            # Per-model breakdown: identify the model/SKU for this line item.
+            # Try candidate field names in order of specificity; fall back to "unknown".
+            model_key = (
+                item.get("sku")
+                or item.get("skuDisplayName")
+                or item.get("skuName")
+                or item.get("product")
+                or item.get("productName")
+                or item.get("model")
+                or "unknown"
+            )
+            model_key = str(model_key).strip() or "unknown"
+
+            # netQuantity / billedQuantity = requests that exceeded the included quota.
+            # Try candidate field names; fall back to 0 when absent.
+            net_qty = (
+                to_num(item.get("netQuantity"))
+                or to_num(item.get("billedQuantity"))
+                or to_num(item.get("chargedQuantity"))
+            )
+            # grossAmount = gross cost before quota deduction.
+            gross_amount = to_num(item.get("grossAmount"))
+
+            if model_key not in model_breakdown:
+                model_breakdown[model_key] = {
+                    "gross_quantity": 0.0,
+                    "billed_quantity": 0.0,
+                    "gross_amount": 0.0,
+                    "net_amount": 0.0,
+                }
+            model_breakdown[model_key]["gross_quantity"] += gross_qty
+            model_breakdown[model_key]["billed_quantity"] += net_qty
+            model_breakdown[model_key]["gross_amount"] += gross_amount
+            model_breakdown[model_key]["net_amount"] += net_amount
 
         result[login] = total_qty
         billed[login] = total_billed
@@ -550,10 +594,10 @@ def fetch_monthly_premium_requests_by_login(
             print(f"  … {idx}/{len(logins)} users processed")
 
     if not endpoint_available:
-        return {}, {}
+        return {}, {}, {}
 
     print(f"  Billing API: premium request data fetched for {len(result)} user(s) ({year}-{month:02d}).")
-    return result, billed
+    return result, billed, model_breakdown
 
 
 def is_active(last_activity_at):
@@ -1365,7 +1409,7 @@ def main():
         f"Fetching calendar-month premium request billing data "
         f"for period {billing_period_str} …"
     )
-    billing_premium_by_login, billing_amount_by_login = fetch_monthly_premium_requests_by_login(
+    billing_premium_by_login, billing_amount_by_login, billing_model_breakdown = fetch_monthly_premium_requests_by_login(
         list(seats_by_login.keys()), REPORT_YEAR, REPORT_MONTH
     )
     billing_available = bool(billing_premium_by_login) or bool(billing_amount_by_login)
@@ -1374,6 +1418,58 @@ def main():
             f"  [INFO] Billing API data unavailable for {billing_period_str}; "
             f"billing_premium_requests_month and billing_billed_amount_month columns will be empty."
         )
+
+    # Print per-model breakdown to console and write a dedicated CSV when available.
+    if billing_model_breakdown:
+        # Sort by gross_quantity descending (highest usage first).
+        sorted_models = sorted(
+            billing_model_breakdown.items(),
+            key=lambda kv: kv[1]["gross_quantity"],
+            reverse=True,
+        )
+        print(f"\nPremium requests by model ({billing_period_str}):")
+        print(f"  {'Model':<40} {'Gross Req':>10} {'Incl. Req':>10} {'Billed Req':>11} {'Gross ($)':>10} {'Billed ($)':>11}")
+        print(f"  {'-'*40} {'-'*10} {'-'*10} {'-'*11} {'-'*10} {'-'*11}")
+        for model_name, mv in sorted_models:
+            gross_q = mv["gross_quantity"]
+            billed_q = mv["billed_quantity"]
+            incl_q = max(gross_q - billed_q, 0.0)
+            gross_a = mv["gross_amount"]
+            net_a = mv["net_amount"]
+            print(
+                f"  {model_name:<40} {gross_q:>10.2f} {incl_q:>10.2f} {billed_q:>11.2f} "
+                f"{gross_a:>10.2f} {net_a:>11.2f}"
+            )
+        print()
+
+        # Write a separate CSV with per-model breakdown (matches GitHub billing UI columns).
+        model_csv = f"enterprise_premium_by_model_{REPORT_YEAR}{REPORT_MONTH:02d}.csv"
+        model_fieldnames = [
+            "billing_period",
+            "model",
+            "gross_requests",
+            "included_requests",
+            "billed_requests",
+            "gross_amount",
+            "billed_amount",
+        ]
+        with open(model_csv, "w", newline="", encoding="utf-8") as mf:
+            mw = csv.DictWriter(mf, fieldnames=model_fieldnames)
+            mw.writeheader()
+            for model_name, mv in sorted_models:
+                gross_q = mv["gross_quantity"]
+                billed_q = mv["billed_quantity"]
+                incl_q = max(gross_q - billed_q, 0.0)
+                mw.writerow({
+                    "billing_period": billing_period_str,
+                    "model": model_name,
+                    "gross_requests": round(gross_q, 2),
+                    "included_requests": round(incl_q, 2),
+                    "billed_requests": round(billed_q, 2),
+                    "gross_amount": round(mv["gross_amount"], 4),
+                    "billed_amount": round(mv["net_amount"], 4),
+                })
+        print(f"Per-model premium request breakdown written to: {model_csv}")
 
     # 3) Metrics report and aggregate across all users
     print("Downloading Copilot metrics report (users-28-day/latest) ...")
