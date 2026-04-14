@@ -1419,50 +1419,30 @@ def main():
 
     # Print per-model breakdown to console and write a dedicated CSV when available.
     if billing_model_breakdown:
-        # Pre-compute included_quantity (= gross - billed) for each model once.
-        # max(..., 0.0) guards against floating-point rounding artefacts.
-        for mv in billing_model_breakdown.values():
-            mv["included_quantity"] = max(mv["gross_quantity"] - mv["billed_quantity"], 0.0)
-
         # Sort by gross_quantity descending (highest usage first).
+        # gross_quantity = included requests + billed requests (total premium requests consumed).
         sorted_models = sorted(
             billing_model_breakdown.items(),
             key=lambda kv: kv[1]["gross_quantity"],
             reverse=True,
         )
         print(f"\nPremium requests by model ({billing_period_str}):")
-        print(f"  {'Model':<40} {'Gross Req':>10} {'Incl. Req':>10} {'Billed Req':>11} {'Gross ($)':>10} {'Billed ($)':>11}")
-        print(f"  {'-'*40} {'-'*10} {'-'*10} {'-'*11} {'-'*10} {'-'*11}")
+        print(f"  {'Model':<40} {'Premium Requests':>18}")
+        print(f"  {'-'*40} {'-'*18}")
         for model_name, mv in sorted_models:
-            print(
-                f"  {model_name:<40} {mv['gross_quantity']:>10.2f} {mv['included_quantity']:>10.2f} "
-                f"{mv['billed_quantity']:>11.2f} {mv['gross_amount']:>10.2f} {mv['net_amount']:>11.2f}"
-            )
+            print(f"  {model_name:<40} {mv['gross_quantity']:>18.0f}")
         print()
 
-        # Write a separate CSV with per-model breakdown (matches GitHub billing UI columns).
+        # Write a separate CSV with per-model premium request totals.
         model_csv = f"enterprise_premium_by_model_{REPORT_YEAR}{REPORT_MONTH:02d}.csv"
-        model_fieldnames = [
-            "billing_period",
-            "model",
-            "gross_requests",
-            "included_requests",
-            "billed_requests",
-            "gross_amount",
-            "billed_amount",
-        ]
         with open(model_csv, "w", newline="", encoding="utf-8") as mf:
-            mw = csv.DictWriter(mf, fieldnames=model_fieldnames)
+            mw = csv.DictWriter(mf, fieldnames=["billing_period", "model", "premium_requests"])
             mw.writeheader()
             for model_name, mv in sorted_models:
                 mw.writerow({
                     "billing_period": billing_period_str,
                     "model": model_name,
-                    "gross_requests": round(mv["gross_quantity"], 2),
-                    "included_requests": round(mv["included_quantity"], 2),
-                    "billed_requests": round(mv["billed_quantity"], 2),
-                    "gross_amount": round(mv["gross_amount"], 4),
-                    "billed_amount": round(mv["net_amount"], 4),
+                    "premium_requests": round(mv["gross_quantity"]),
                 })
         print(f"Per-model premium request breakdown written to: {model_csv}")
 
