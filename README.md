@@ -511,11 +511,11 @@ Each breakdown column covers a distinct set of Copilot features (no overlap):
 
 #### Why can `metrics_loc_suggested_28d` be *less than* `metrics_loc_added_28d`?
 
-This is expected for heavy Chat/Edit/Agent users. The agent portion of `metrics_loc_suggested_28d` uses `loc_added + loc_deleted` as a proxy (because the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes in agent/plan mode). Meanwhile `loc_added` in agent mode can be very large when Copilot scaffolds entire files. So for users who rely heavily on Agent, `loc_added` will exceed `loc_suggested`.
+This is expected for heavy Agent users. The `agent_edit` sub-component of `metrics_loc_suggested_agent_28d` uses `loc_added + loc_deleted` as a proxy (because the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes). Meanwhile `loc_added` in agent mode can be very large when Copilot scaffolds entire files. So for users who rely heavily on Agent, `loc_added` will exceed `loc_suggested`.
 
-**Example:** A developer uses Copilot Agent to scaffold a 200-line file. `loc_added` increases by 200 and `loc_deleted` by 50, so the proxy for `loc_suggested_agent` is 250. But `loc_suggested_inline` (ghost-text) may only be 30 lines. The result: `loc_suggested_28d = 280`, `loc_added_28d = 200 + inline_added`.
+**Example:** A developer uses Copilot Agent to scaffold a 200-line file directly via file writes (`agent_edit`). `loc_added` increases by 200 and `loc_deleted` by 50, so the proxy for that component is 250. But `loc_suggested_inline` (ghost-text) may only be 30 lines. The result: `loc_suggested_28d = 280`, `loc_added_28d = 200 + inline_added`.
 
-**Conclusion:** `loc_added ≥ loc_suggested` is the norm for heavy Chat/Edit/Agent users, and is not a data error.
+**Conclusion:** `loc_added ≥ loc_suggested` is the norm for heavy Agent users, and is not a data error.
 
 ### Calculating Acceptance Rates
 
@@ -523,14 +523,14 @@ This is expected for heavy Chat/Edit/Agent users. The agent portion of `metrics_
 
 #### The Problem
 
-The `_agent_` LOC columns use a different calculation than `_inline_`/`_chat_`/`_edit_`:
+The `_agent_` LOC columns mix two data sources:
 
-- **Inline / Chat / Edit**: `loc_suggested` = `loc_suggested_to_add_sum` (lines Copilot displayed as a suggestion)
-- **Agent**: `loc_suggested` = `loc_added + loc_deleted` (proxy — direct file writes bypass the suggestion step)
+- **Inline / Chat / Edit / Agent chat-panel**: `loc_suggested` = `loc_suggested_to_add_sum` (lines Copilot displayed as a suggestion, from the API directly)
+- **`agent_edit` (direct file writes)**: `loc_suggested` = `loc_added + loc_deleted` (proxy — direct file writes bypass the suggestion step and the API returns 0 for `loc_suggested_to_add_sum`)
 
 When you calculate `metrics_loc_added_28d / metrics_loc_suggested_28d`:
-- The numerator (`loc_added`) for agent is large (all lines written)
-- The denominator (`loc_suggested`) for agent is also large (same proxy), but they don't cancel cleanly across features
+- The numerator (`loc_added`) for agent_edit is large (all lines written)
+- The denominator (`loc_suggested`) for agent_edit is also large (same proxy), but they don't cancel cleanly across features
 - Result: acceptance rates are unreliable when mix of inline + agent is present
 
 #### The Solution
