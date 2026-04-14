@@ -566,12 +566,10 @@ def fetch_monthly_premium_requests_by_login(
             model_key = str(model_key).strip() or "unknown"
 
             # netQuantity / billedQuantity = requests that exceeded the included quota.
-            # Try candidate field names; fall back to 0 when absent.
-            net_qty = (
-                to_num(item.get("netQuantity"))
-                or to_num(item.get("billedQuantity"))
-                or to_num(item.get("chargedQuantity"))
-            )
+            # Use explicit None checks so a legitimate value of 0.0 is not skipped.
+            _NET_QTY_FIELDS = ("netQuantity", "billedQuantity", "chargedQuantity")
+            _net_raw = next((item[k] for k in _NET_QTY_FIELDS if item.get(k) is not None), None)
+            net_qty = to_num(_net_raw)
             # grossAmount = gross cost before quota deduction.
             gross_amount = to_num(item.get("grossAmount"))
 
@@ -1421,6 +1419,11 @@ def main():
 
     # Print per-model breakdown to console and write a dedicated CSV when available.
     if billing_model_breakdown:
+        # Pre-compute included_quantity (= gross - billed) for each model once.
+        # max(..., 0.0) guards against floating-point rounding artefacts.
+        for mv in billing_model_breakdown.values():
+            mv["included_quantity"] = max(mv["gross_quantity"] - mv["billed_quantity"], 0.0)
+
         # Sort by gross_quantity descending (highest usage first).
         sorted_models = sorted(
             billing_model_breakdown.items(),
@@ -1431,14 +1434,9 @@ def main():
         print(f"  {'Model':<40} {'Gross Req':>10} {'Incl. Req':>10} {'Billed Req':>11} {'Gross ($)':>10} {'Billed ($)':>11}")
         print(f"  {'-'*40} {'-'*10} {'-'*10} {'-'*11} {'-'*10} {'-'*11}")
         for model_name, mv in sorted_models:
-            gross_q = mv["gross_quantity"]
-            billed_q = mv["billed_quantity"]
-            incl_q = max(gross_q - billed_q, 0.0)
-            gross_a = mv["gross_amount"]
-            net_a = mv["net_amount"]
             print(
-                f"  {model_name:<40} {gross_q:>10.2f} {incl_q:>10.2f} {billed_q:>11.2f} "
-                f"{gross_a:>10.2f} {net_a:>11.2f}"
+                f"  {model_name:<40} {mv['gross_quantity']:>10.2f} {mv['included_quantity']:>10.2f} "
+                f"{mv['billed_quantity']:>11.2f} {mv['gross_amount']:>10.2f} {mv['net_amount']:>11.2f}"
             )
         print()
 
@@ -1457,15 +1455,12 @@ def main():
             mw = csv.DictWriter(mf, fieldnames=model_fieldnames)
             mw.writeheader()
             for model_name, mv in sorted_models:
-                gross_q = mv["gross_quantity"]
-                billed_q = mv["billed_quantity"]
-                incl_q = max(gross_q - billed_q, 0.0)
                 mw.writerow({
                     "billing_period": billing_period_str,
                     "model": model_name,
-                    "gross_requests": round(gross_q, 2),
-                    "included_requests": round(incl_q, 2),
-                    "billed_requests": round(billed_q, 2),
+                    "gross_requests": round(mv["gross_quantity"], 2),
+                    "included_requests": round(mv["included_quantity"], 2),
+                    "billed_requests": round(mv["billed_quantity"], 2),
                     "gross_amount": round(mv["gross_amount"], 4),
                     "billed_amount": round(mv["net_amount"], 4),
                 })
