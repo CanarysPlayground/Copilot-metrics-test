@@ -475,8 +475,12 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g., `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g., `python`, `typescript`) |
 | `metrics_top_feature_28d` | The Copilot feature the user used most often (e.g., `Inline Chat`, `Agent`, `Ask`, `Edit`) |
-| `metrics_loc_suggested_by_language_28d` | Per-language breakdown of LOC suggested, sorted by volume descending (e.g., `python 1250, java 560, typescript 320`). See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
-| `metrics_loc_added_by_language_28d` | Per-language breakdown of LOC added (accepted by the user), sorted by volume descending. See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
+| `metrics_loc_suggested_by_language_total_28d` | Per-language breakdown of LOC suggested across all features (inline + chat + edit + agent), sorted by volume descending (e.g., `python 1250, java 560, typescript 320`). See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
+| `metrics_loc_added_by_language_total_28d` | Per-language breakdown of LOC added (accepted by the user) across all features, sorted by volume descending. See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
+| `metrics_loc_suggested_by_language_inline_28d` | Per-language breakdown of LOC suggested via inline (code_completion ghost-text) suggestions only |
+| `metrics_loc_added_by_language_inline_28d` | Per-language breakdown of LOC added from inline suggestions only |
+| `metrics_loc_suggested_by_language_agent_28d` | Per-language breakdown of LOC suggested by Agent/Plan mode features (chat_panel_agent_mode, chat_panel_plan_mode, chat_panel_custom_mode, agent_edit) |
+| `metrics_loc_added_by_language_agent_28d` | Per-language breakdown of LOC applied in Agent/Plan mode |
 
 ---
 
@@ -565,13 +569,13 @@ In this example:
 
 ### Per-Language Breakdown
 
-The `metrics_loc_suggested_by_language_28d` and `metrics_loc_added_by_language_28d` columns break down lines of code by the programming language detected by GitHub Copilot. Two special values can appear in this breakdown:
+The `metrics_loc_suggested_by_language_total_28d` and `metrics_loc_added_by_language_total_28d` columns break down lines of code by the programming language detected by GitHub Copilot. Two special values can appear in this breakdown:
 
 - **`unknown`** — The GitHub API returned a `null` or missing `language` field for that activity entry. This typically occurs when Copilot is used in a file whose language cannot be detected (e.g., a plain-text scratch buffer, an unsaved file, or a file type not recognized by the language detector). The report preserves these as `unknown` rather than discarding them so the LOC totals remain accurate.
 
 - **`others`** — The GitHub API itself groups less common or unsupported languages under the label `others`. This is a server-side aggregation by GitHub; it is not applied by this report. It covers languages that are tracked by Copilot but not broken out individually in the API response.
 
-Neither value represents an error. The per-language totals (including `unknown` and `others`) will sum to the overall `metrics_loc_suggested_28d` / `metrics_loc_added_28d` figure for that user.
+Neither value represents an error. The per-language totals (including `unknown` and `others`) in the `_total_28d` columns will sum to the overall `metrics_loc_suggested_28d` / `metrics_loc_added_28d` figure for that user. The `_inline_28d` and `_agent_28d` columns apply the same special values but are scoped to their respective feature groups.
 
 ### Premium Request Tracking
 
