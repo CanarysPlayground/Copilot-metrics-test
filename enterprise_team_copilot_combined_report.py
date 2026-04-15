@@ -840,7 +840,7 @@ def format_model_language_loc(model_lang_dict: Dict[str, Dict[str, float]]) -> s
         lang_parts = [
             f"{lang} - {int(v)}"
             for lang, v in sorted(lang_counts.items(), key=lambda kv: kv[1], reverse=True)
-            if v > 0
+            if v != 0
         ]
         if lang_parts:
             parts.append(f"{model}: {', '.join(lang_parts)}")
@@ -1202,8 +1202,8 @@ def _infer_model_language_loc_proportional(
     total_interactions = sum(model_counts.values())
     if total_interactions <= 0:
         return model_language_loc
-    # Filter once to only languages with positive LOC before the per-model loop.
-    nonzero_language_loc = {lang: loc for lang, loc in language_loc.items() if loc > 0}
+    # Filter once to only languages with non-zero LOC before the per-model loop.
+    nonzero_language_loc = {lang: loc for lang, loc in language_loc.items() if loc != 0}
     if not nonzero_language_loc:
         return model_language_loc
     result: Dict[str, Dict[str, float]] = {}
