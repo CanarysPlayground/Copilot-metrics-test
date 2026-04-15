@@ -824,6 +824,28 @@ def format_language_loc(lang_dict: Dict[str, float]) -> str:
     sorted_items = sorted(lang_dict.items(), key=lambda kv: kv[1], reverse=True)
     return ", ".join(f"{lang} {int(v)}" for lang, v in sorted_items if v > 0)
 
+def format_model_language_loc(model_lang_dict: Dict[str, Dict[str, float]]) -> str:
+    """Format per-model per-language LOC as a human-readable string.
+
+    Returns a string like 'claude-sonnet-4: java - 4, python - 20 | gpt-4o: java - 10'
+    sorted by total LOC per model (descending), languages sorted by LOC (descending).
+    Returns an empty string when the dict is empty or all counts are zero.
+    """
+    if not model_lang_dict:
+        return ""
+    model_totals = {m: sum(v for v in lc.values()) for m, lc in model_lang_dict.items()}
+    parts = []
+    for model in sorted(model_lang_dict, key=lambda m: model_totals.get(m, 0), reverse=True):
+        lang_counts = model_lang_dict[model]
+        lang_parts = [
+            f"{lang} - {int(v)}"
+            for lang, v in sorted(lang_counts.items(), key=lambda kv: kv[1], reverse=True)
+            if v > 0
+        ]
+        if lang_parts:
+            parts.append(f"{model}: {', '.join(lang_parts)}")
+    return " | ".join(parts)
+
 def format_model_premium_requests(model_dict: Dict[str, float]) -> str:
     """Format per-model premium request counts as a human-readable string.
 
@@ -890,6 +912,10 @@ class UserAgg:
     language_loc_added_inline: Dict[str, float] = field(default_factory=dict)
     language_loc_suggested_agent: Dict[str, float] = field(default_factory=dict)
     language_loc_added_agent: Dict[str, float] = field(default_factory=dict)
+
+    # Per-model per-language LOC: model → {language → loc}
+    model_language_loc_suggested: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    model_language_loc_added: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     # Per-feature LoC tracking for refined acceptance percentage calculation
     feature_loc_suggested: Dict[str, float] = field(default_factory=dict)
@@ -1017,6 +1043,10 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 # Route to per-feature-language dicts using the feature field on each entry.
                 feat_lf = normalize_feature_name(lf.get("feature"))
                 _route_language_loc(agg, feat_lf, lang, loc_sug, loc_add)
+                # If the nested entry also carries a model field, record per-model per-language LOC.
+                model_lf = str(lf.get("model") or "").strip()
+                if model_lf:
+                    _accumulate_model_language_loc(agg, model_lf, lang, loc_sug, loc_add)
         else:
             # Flat NDJSON format: language is a top-level field per row.
             lang = r.get("language")
@@ -1032,6 +1062,10 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 # Route to per-feature-language dicts using the top-level feature field.
                 feat_flat = normalize_feature_name(r.get("feature"))
                 _route_language_loc(agg, feat_flat, lang, loc_sug, loc_add)
+                # Flat format: each row carries both model and language → record per-model per-language LOC.
+                model_flat = str(r.get("model") or "").strip()
+                if model_flat:
+                    _accumulate_model_language_loc(agg, model_flat, lang, loc_sug, loc_add)
 
         tbf = r.get("totals_by_feature")
         if isinstance(tbf, list):
@@ -1101,6 +1135,18 @@ def _route_language_loc(agg: "UserAgg", feat: str, lang: str, loc_sug: float, lo
             agg.language_loc_added_agent[lang] = agg.language_loc_added_agent.get(lang, 0.0) + loc_add
 
 
+def _accumulate_model_language_loc(
+    agg: "UserAgg", model: str, lang: str, loc_sug: float, loc_add: float
+) -> None:
+    """Accumulate *loc_sug* / *loc_add* into the per-model per-language dicts on *agg*."""
+    if loc_sug:
+        inner = agg.model_language_loc_suggested.setdefault(model, {})
+        inner[lang] = inner.get(lang, 0.0) + loc_sug
+    if loc_add:
+        inner = agg.model_language_loc_added.setdefault(model, {})
+        inner[lang] = inner.get(lang, 0.0) + loc_add
+
+
 def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     if not agg:
         return {
@@ -1130,6 +1176,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_loc_added_by_language_inline_28d": "",
             "metrics_loc_suggested_by_language_agent_28d": "",
             "metrics_loc_added_by_language_agent_28d": "",
+            "metrics_loc_suggested_by_model_language_28d": "",
+            "metrics_loc_added_by_model_language_28d": "",
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
@@ -1201,6 +1249,8 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_loc_added_by_language_inline_28d": format_language_loc(agg.language_loc_added_inline),
         "metrics_loc_suggested_by_language_agent_28d": format_language_loc(agg.language_loc_suggested_agent),
         "metrics_loc_added_by_language_agent_28d": format_language_loc(agg.language_loc_added_agent),
+        "metrics_loc_suggested_by_model_language_28d": format_model_language_loc(agg.model_language_loc_suggested),
+        "metrics_loc_added_by_model_language_28d": format_model_language_loc(agg.model_language_loc_added),
     }
 
 # -------------------------
@@ -1347,7 +1397,13 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_loc_suggested_by_language_inline_28d Top languages by LOC proposed via inline (code_completion) suggestions\n"
         f"  metrics_loc_added_by_language_inline_28d     Top languages by LOC accepted from inline suggestions\n"
         f"  metrics_loc_suggested_by_language_agent_28d  Top languages by LOC proposed by Agent/Plan mode features\n"
-        f"  metrics_loc_added_by_language_agent_28d      Top languages by LOC applied in Agent/Plan mode\n\n"
+        f"  metrics_loc_added_by_language_agent_28d      Top languages by LOC applied in Agent/Plan mode\n"
+        f"  metrics_loc_suggested_by_model_language_28d  Per-model breakdown of LOC proposed, by language\n"
+        f"                                               Format: 'claude-sonnet-4: java - 4, python - 20 | gpt-4o: java - 10'\n"
+        f"                                               Populated from the 28-day metrics report (flat NDJSON format).\n"
+        f"                                               Models and languages sorted by LOC count descending.\n"
+        f"  metrics_loc_added_by_model_language_28d      Per-model breakdown of LOC applied, by language\n"
+        f"                                               Same format and source as metrics_loc_suggested_by_model_language_28d.\n\n"
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
@@ -1583,6 +1639,8 @@ def main():
         "metrics_loc_added_by_language_inline_28d",
         "metrics_loc_suggested_by_language_agent_28d",
         "metrics_loc_added_by_language_agent_28d",
+        "metrics_loc_suggested_by_model_language_28d",
+        "metrics_loc_added_by_model_language_28d",
     ]
 
     # 5) Build output rows per team.
