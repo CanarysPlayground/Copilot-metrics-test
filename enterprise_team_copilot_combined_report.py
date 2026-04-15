@@ -1014,6 +1014,26 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                         #    with a multiplier greater than 1× but gives correct non-zero values
                         #    for all users who actively use premium models.
                         agg.premium_requests += interaction_count
+
+                # Check for per-language LOC sub-arrays inside each model-feature entry.
+                # The GitHub API may include a totals_by_language or languages array inside
+                # each model entry, giving exact per-model per-language LOC counts. Try both
+                # the NDJSON-style name (totals_by_language) and the org-metrics style (languages).
+                _mf_lang_list = mf.get("totals_by_language") or mf.get("languages")
+                if isinstance(_mf_lang_list, list):
+                    for _ml in _mf_lang_list:
+                        if not isinstance(_ml, dict):
+                            continue
+                        # Accept both "language" (NDJSON) and "name" (org-metrics API) field names.
+                        _ml_lang = _ml.get("language") or _ml.get("name") or "unknown"
+                        # Accept both NDJSON and org-level API field naming conventions.
+                        _ml_loc_sug = get_loc_field_value(_ml, "loc_suggested_to_add_sum", "loc_suggested")
+                        if not _ml_loc_sug:
+                            _ml_loc_sug = to_num(_ml.get("total_code_lines_suggested"))
+                        _ml_loc_add = get_loc_field_value(_ml, "loc_added_sum", "loc_added")
+                        if not _ml_loc_add:
+                            _ml_loc_add = to_num(_ml.get("total_code_lines_accepted"))
+                        _accumulate_model_language_loc(agg, model, _ml_lang, _ml_loc_sug, _ml_loc_add)
         else:
             # Flat NDJSON format: model is a top-level field per row.
             model = r.get("model")
@@ -1400,12 +1420,15 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_loc_added_by_language_agent_28d      Top languages by LOC applied in Agent/Plan mode\n"
         f"  metrics_loc_suggested_by_model_language_28d  Per-model breakdown of LOC proposed, by language\n"
         f"                                               Format: 'claude-sonnet-4: java - 4, python - 20 | gpt-4o: java - 10'\n"
-        f"                                               Populated from the 28-day metrics report (flat NDJSON and nested\n"
-        f"                                               API formats; nested format only when the model field is present\n"
-        f"                                               on language entries).\n"
+        f"                                               Populated when the GitHub API provides per-language LOC data inside\n"
+        f"                                               model entries (via 'languages' or 'totals_by_language' sub-arrays\n"
+        f"                                               within totals_by_model_feature) or when the flat NDJSON report\n"
+        f"                                               format includes both model and language fields in the same row.\n"
         f"                                               Models and languages sorted by LOC count descending.\n"
+        f"                                               Empty when the API format does not cross-reference model and language.\n"
         f"  metrics_loc_added_by_model_language_28d      Per-model breakdown of LOC applied, by language\n"
-        f"                                               Same format and source as metrics_loc_suggested_by_model_language_28d.\n\n"
+        f"                                               Same format and data source as metrics_loc_suggested_by_model_language_28d.\n"
+        f"                                               Shows lines of code actually applied from each model, by language.\n\n"
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
