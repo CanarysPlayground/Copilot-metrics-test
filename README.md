@@ -500,12 +500,12 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g., `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g., `python`, `typescript`) |
 | `metrics_top_feature_28d` | The Copilot feature the user used most often (e.g., `Inline Chat`, `Agent`, `Ask`, `Edit`) |
-| `metrics_loc_suggested_by_language_total_28d` | Per-language breakdown of LOC suggested across all features (inline + chat + edit + agent), sorted by volume descending (e.g., `python 1250, java 560, typescript 320`). See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
-| `metrics_loc_added_by_language_total_28d` | Per-language breakdown of LOC added (accepted by the user) across all features, sorted by volume descending. See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
+| `metrics_loc_suggested_by_language_total_28d` | Per-language breakdown of LOC suggested across all features (inline + chat + edit + agent; `agent_edit` contributes 0 — direct file writes have no suggestion UI), sorted by volume descending (e.g., `python 1250, java 560, typescript 320`). See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
+| `metrics_loc_added_by_language_total_28d` | Per-language breakdown of LOC added (accepted by the user) across all features (inline + chat + edit + agent + `agent_edit`), sorted by volume descending. See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
 | `metrics_loc_suggested_by_language_inline_28d` | Per-language breakdown of LOC suggested via inline (code_completion ghost-text) suggestions only |
 | `metrics_loc_added_by_language_inline_28d` | Per-language breakdown of LOC added from inline suggestions only |
-| `metrics_loc_suggested_by_language_agent_28d` | Per-language breakdown of LOC suggested by Agent/Plan mode features (`chat_panel_agent_mode`, `chat_panel_plan_mode`, `chat_panel_custom_mode`, `agent`, `agent_edit`) |
-| `metrics_loc_added_by_language_agent_28d` | Per-language breakdown of LOC applied in Agent/Plan mode |
+| `metrics_loc_suggested_by_language_agent_28d` | Per-language breakdown of LOC suggested by Agent/Plan mode features (`chat_panel_agent_mode`, `chat_panel_plan_mode`, `chat_panel_custom_mode`, `agent`). `agent_edit` is excluded — direct file writes always return 0 for `loc_suggested_to_add_sum` |
+| `metrics_loc_added_by_language_agent_28d` | Per-language breakdown of LOC applied in Agent/Plan mode (including `agent_edit` direct file writes) |
 
 #### Billing — Calendar Month
 
