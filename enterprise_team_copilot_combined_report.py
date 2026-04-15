@@ -824,28 +824,6 @@ def format_language_loc(lang_dict: Dict[str, float]) -> str:
     sorted_items = sorted(lang_dict.items(), key=lambda kv: kv[1], reverse=True)
     return ", ".join(f"{lang} {int(v)}" for lang, v in sorted_items if v > 0)
 
-def format_model_language_loc(model_lang_dict: Dict[str, Dict[str, float]]) -> str:
-    """Format per-model per-language LOC as a human-readable string.
-
-    Returns a string like 'claude-sonnet-4: java - 4, python - 20 | gpt-4o: java - 10'
-    sorted by total LOC per model (descending), languages sorted by LOC (descending).
-    Returns an empty string when the dict is empty or all counts are zero.
-    """
-    if not model_lang_dict:
-        return ""
-    model_totals = {m: sum(v for v in lang_counts.values()) for m, lang_counts in model_lang_dict.items()}
-    parts = []
-    for model in sorted(model_lang_dict, key=lambda m: model_totals.get(m, 0), reverse=True):
-        lang_counts = model_lang_dict[model]
-        lang_parts = [
-            f"{lang} - {int(v)}"
-            for lang, v in sorted(lang_counts.items(), key=lambda kv: kv[1], reverse=True)
-            if v != 0
-        ]
-        if lang_parts:
-            parts.append(f"{model}: {', '.join(lang_parts)}")
-    return " | ".join(parts)
-
 def format_model_premium_requests(model_dict: Dict[str, float]) -> str:
     """Format per-model premium request counts as a human-readable string.
 
@@ -912,10 +890,6 @@ class UserAgg:
     language_loc_added_inline: Dict[str, float] = field(default_factory=dict)
     language_loc_suggested_agent: Dict[str, float] = field(default_factory=dict)
     language_loc_added_agent: Dict[str, float] = field(default_factory=dict)
-
-    # Per-model per-language LOC: model → {language → loc}
-    model_language_loc_suggested: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    model_language_loc_added: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     # Per-feature LoC tracking for refined acceptance percentage calculation
     feature_loc_suggested: Dict[str, float] = field(default_factory=dict)
@@ -1015,32 +989,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                         #    for all users who actively use premium models.
                         agg.premium_requests += interaction_count
 
-                # Check for per-language LOC sub-arrays inside each model-feature entry.
-                # The GitHub API may include a language breakdown array inside each model entry,
-                # giving exact per-model per-language LOC counts. Try all known field name
-                # variants: NDJSON-style (totals_by_language, totals_by_language_feature),
-                # org-metrics style (languages), and any other observed aliases.
-                _mf_lang_list = (
-                    mf.get("totals_by_language")
-                    or mf.get("totals_by_language_feature")
-                    or mf.get("languages")
-                    or mf.get("language_breakdown")
-                    or mf.get("by_language")
-                )
-                if isinstance(_mf_lang_list, list):
-                    for _ml in _mf_lang_list:
-                        if not isinstance(_ml, dict):
-                            continue
-                        # Accept both "language" (NDJSON) and "name" (org-metrics API) field names.
-                        _ml_lang = _ml.get("language") or _ml.get("name") or "unknown"
-                        # Accept both NDJSON and org-level API field naming conventions.
-                        _ml_loc_sug = get_loc_field_value(_ml, "loc_suggested_to_add_sum", "loc_suggested")
-                        if not _ml_loc_sug:
-                            _ml_loc_sug = to_num(_ml.get("total_code_lines_suggested"))
-                        _ml_loc_add = get_loc_field_value(_ml, "loc_added_sum", "loc_added")
-                        if not _ml_loc_add:
-                            _ml_loc_add = to_num(_ml.get("total_code_lines_accepted"))
-                        _accumulate_model_language_loc(agg, model, _ml_lang, _ml_loc_sug, _ml_loc_add)
+
         else:
             # Flat NDJSON format: model is a top-level field per row.
             model = r.get("model")
@@ -1070,13 +1019,6 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 # Route to per-feature-language dicts using the feature field on each entry.
                 feat_lf = normalize_feature_name(lf.get("feature"))
                 _route_language_loc(agg, feat_lf, lang, loc_sug, loc_add)
-                # If the nested entry also carries a model field, record per-model per-language LOC.
-                # Try several known field name variants for the model identifier.
-                model_lf = str(
-                    lf.get("model") or lf.get("model_name") or lf.get("model_id") or ""
-                ).strip()
-                if model_lf:
-                    _accumulate_model_language_loc(agg, model_lf, lang, loc_sug, loc_add)
         else:
             # Flat NDJSON format: language is a top-level field per row.
             lang = r.get("language")
@@ -1092,10 +1034,6 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 # Route to per-feature-language dicts using the top-level feature field.
                 feat_flat = normalize_feature_name(r.get("feature"))
                 _route_language_loc(agg, feat_flat, lang, loc_sug, loc_add)
-                # Flat format: each row carries both model and language → record per-model per-language LOC.
-                model_flat = str(r.get("model") or "").strip()
-                if model_flat:
-                    _accumulate_model_language_loc(agg, model_flat, lang, loc_sug, loc_add)
 
         tbf = r.get("totals_by_feature")
         if isinstance(tbf, list):
@@ -1165,58 +1103,6 @@ def _route_language_loc(agg: "UserAgg", feat: str, lang: str, loc_sug: float, lo
             agg.language_loc_added_agent[lang] = agg.language_loc_added_agent.get(lang, 0.0) + loc_add
 
 
-def _accumulate_model_language_loc(
-    agg: "UserAgg", model: str, lang: str, loc_sug: float, loc_add: float
-) -> None:
-    """Accumulate *loc_sug* / *loc_add* into the per-model per-language dicts on *agg*."""
-    if loc_sug:
-        inner = agg.model_language_loc_suggested.setdefault(model, {})
-        inner[lang] = inner.get(lang, 0.0) + loc_sug
-    if loc_add:
-        inner = agg.model_language_loc_added.setdefault(model, {})
-        inner[lang] = inner.get(lang, 0.0) + loc_add
-
-
-def _infer_model_language_loc_proportional(
-    model_language_loc: Dict[str, Dict[str, float]],
-    language_loc: Dict[str, float],
-    model_counts: Dict[str, float],
-) -> Dict[str, Dict[str, float]]:
-    """Return per-model per-language LOC, inferring proportionally when explicit data is absent.
-
-    The GitHub users-28-day NDJSON report stores model interaction counts
-    (totals_by_model_feature) and per-language LOC (totals_by_language_feature)
-    in separate arrays without a shared key, so the API rarely provides an explicit
-    model × language LOC cross-reference.
-
-    When *model_language_loc* is already populated (direct API data), it is returned
-    unchanged.  Otherwise, the per-language LOC totals from *language_loc* are
-    distributed across models in proportion to each model's share of total
-    interactions from *model_counts*.  This is exact when only one model was used and
-    a best-effort approximation when multiple models contributed.
-    """
-    if model_language_loc:
-        return model_language_loc
-    if not language_loc or not model_counts:
-        return model_language_loc
-    total_interactions = sum(model_counts.values())
-    if total_interactions <= 0:
-        return model_language_loc
-    # Filter once to only languages with non-zero LOC before the per-model loop.
-    nonzero_language_loc = {lang: loc for lang, loc in language_loc.items() if loc != 0}
-    if not nonzero_language_loc:
-        return model_language_loc
-    result: Dict[str, Dict[str, float]] = {}
-    for model, count in model_counts.items():
-        if count <= 0:
-            continue
-        share = count / total_interactions
-        lang_dict: Dict[str, float] = {lang: loc * share for lang, loc in nonzero_language_loc.items()}
-        if lang_dict:
-            result[model] = lang_dict
-    return result
-
-
 def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
     if not agg:
         return {
@@ -1246,8 +1132,6 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
             "metrics_loc_added_by_language_inline_28d": "",
             "metrics_loc_suggested_by_language_agent_28d": "",
             "metrics_loc_added_by_language_agent_28d": "",
-            "metrics_loc_suggested_by_model_language_28d": "",
-            "metrics_loc_added_by_model_language_28d": "",
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
@@ -1319,19 +1203,6 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
         "metrics_loc_added_by_language_inline_28d": format_language_loc(agg.language_loc_added_inline),
         "metrics_loc_suggested_by_language_agent_28d": format_language_loc(agg.language_loc_suggested_agent),
         "metrics_loc_added_by_language_agent_28d": format_language_loc(agg.language_loc_added_agent),
-        # Use explicit API model×language data when available; fall back to proportional
-        # distribution of per-language LOC across models by interaction share when the
-        # users-28-day NDJSON report does not cross-reference the two dimensions directly.
-        "metrics_loc_suggested_by_model_language_28d": format_model_language_loc(
-            _infer_model_language_loc_proportional(
-                agg.model_language_loc_suggested, agg.language_loc_suggested, agg.model_counts
-            )
-        ),
-        "metrics_loc_added_by_model_language_28d": format_model_language_loc(
-            _infer_model_language_loc_proportional(
-                agg.model_language_loc_added, agg.language_loc_added, agg.model_counts
-            )
-        ),
     }
 
 # -------------------------
@@ -1479,19 +1350,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_loc_added_by_language_inline_28d     Top languages by LOC accepted from inline suggestions\n"
         f"  metrics_loc_suggested_by_language_agent_28d  Top languages by LOC proposed by Agent/Plan mode features\n"
         f"  metrics_loc_added_by_language_agent_28d      Top languages by LOC applied in Agent/Plan mode\n"
-        f"  metrics_loc_suggested_by_model_language_28d  Per-model breakdown of LOC proposed, by language\n"
-        f"                                               Format: 'claude-sonnet-4: java - 4, python - 20 | gpt-4o: java - 10'\n"
-        f"                                               Populated from explicit API data when the GitHub report provides\n"
-        f"                                               per-language LOC inside model entries, or a model field inside\n"
-        f"                                               language entries. When the API does not supply this cross-reference\n"
-        f"                                               (the common case for users-28-day NDJSON), the column is filled by\n"
-        f"                                               distributing per-language LOC proportionally across models based on\n"
-        f"                                               each model's share of total interactions (exact for single-model\n"
-        f"                                               users; best-effort approximation for multi-model users).\n"
-        f"                                               Models and languages sorted by LOC count descending.\n"
-        f"  metrics_loc_added_by_model_language_28d      Per-model breakdown of LOC applied, by language\n"
-        f"                                               Same format and fallback logic as metrics_loc_suggested_by_model_language_28d.\n"
-        f"                                               Shows lines of code actually applied from each model, by language.\n\n"
+        f"\n"
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
@@ -1727,8 +1586,6 @@ def main():
         "metrics_loc_added_by_language_inline_28d",
         "metrics_loc_suggested_by_language_agent_28d",
         "metrics_loc_added_by_language_agent_28d",
-        "metrics_loc_suggested_by_model_language_28d",
-        "metrics_loc_added_by_model_language_28d",
     ]
 
     # 5) Build output rows per team.
