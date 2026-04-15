@@ -481,6 +481,8 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_added_by_language_inline_28d` | Per-language breakdown of LOC added from inline suggestions only |
 | `metrics_loc_suggested_by_language_agent_28d` | Per-language breakdown of LOC suggested by Agent/Plan mode features (chat_panel_agent_mode, chat_panel_plan_mode, chat_panel_custom_mode, agent_edit) |
 | `metrics_loc_added_by_language_agent_28d` | Per-language breakdown of LOC applied in Agent/Plan mode |
+| `metrics_loc_suggested_by_model_language_28d` | **Per-model breakdown of LOC proposed, by language** — shows how many lines each AI model suggested per programming language. Format: `claude-sonnet-4: java - 4, python - 20 \| gpt-4o: java - 10`. Models sorted by total LOC descending; languages sorted by LOC descending within each model. Populated when the GitHub API provides per-language LOC data inside model entries (via `languages` or `totals_by_language` sub-arrays in `totals_by_model_feature`) or when the flat NDJSON report format includes both `model` and `language` fields in the same row. Empty when the API format does not cross-reference model and language LOC. |
+| `metrics_loc_added_by_model_language_28d` | **Per-model breakdown of LOC applied, by language** — same format as `metrics_loc_suggested_by_model_language_28d` but counts lines of code the user actually applied from each model, broken down by language. Populated from the same data source as `metrics_loc_suggested_by_model_language_28d`. |
 
 ---
 
