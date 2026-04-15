@@ -885,6 +885,12 @@ class UserAgg:
     language_loc_suggested: Dict[str, float] = field(default_factory=dict)
     language_loc_added: Dict[str, float] = field(default_factory=dict)
 
+    # Per-feature per-language LOC (inline and agent breakdowns)
+    language_loc_suggested_inline: Dict[str, float] = field(default_factory=dict)
+    language_loc_added_inline: Dict[str, float] = field(default_factory=dict)
+    language_loc_suggested_agent: Dict[str, float] = field(default_factory=dict)
+    language_loc_added_agent: Dict[str, float] = field(default_factory=dict)
+
     # Per-feature LoC tracking for refined acceptance percentage calculation
     feature_loc_suggested: Dict[str, float] = field(default_factory=dict)
     feature_loc_added: Dict[str, float] = field(default_factory=dict)
@@ -1008,6 +1014,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                     agg.language_loc_suggested[lang] = agg.language_loc_suggested.get(lang, 0.0) + loc_sug
                 if loc_add:
                     agg.language_loc_added[lang] = agg.language_loc_added.get(lang, 0.0) + loc_add
+                # Route to per-feature-language dicts using the feature field on each entry.
+                feat_lf = normalize_feature_name(lf.get("feature"))
+                _route_language_loc(agg, feat_lf, lang, loc_sug, loc_add)
         else:
             # Flat NDJSON format: language is a top-level field per row.
             lang = r.get("language")
@@ -1020,6 +1029,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                     agg.language_loc_suggested[lang] = agg.language_loc_suggested.get(lang, 0.0) + loc_sug
                 if loc_add:
                     agg.language_loc_added[lang] = agg.language_loc_added.get(lang, 0.0) + loc_add
+                # Route to per-feature-language dicts using the top-level feature field.
+                feat_flat = normalize_feature_name(r.get("feature"))
+                _route_language_loc(agg, feat_flat, lang, loc_sug, loc_add)
 
         tbf = r.get("totals_by_feature")
         if isinstance(tbf, list):
@@ -1075,6 +1087,20 @@ def _sum_feature_loc(loc_dict: Dict[str, float], feature_set: frozenset[str]) ->
     return int(sum(loc_dict.get(feat, 0.0) for feat in feature_set))
 
 
+def _route_language_loc(agg: "UserAgg", feat: str, lang: str, loc_sug: float, loc_add: float) -> None:
+    """Accumulate *loc_sug* / *loc_add* into the appropriate per-feature-language dict on *agg*."""
+    if feat in _INLINE_FEATURES:
+        if loc_sug:
+            agg.language_loc_suggested_inline[lang] = agg.language_loc_suggested_inline.get(lang, 0.0) + loc_sug
+        if loc_add:
+            agg.language_loc_added_inline[lang] = agg.language_loc_added_inline.get(lang, 0.0) + loc_add
+    elif feat in _AGENT_FEATURES:
+        if loc_sug:
+            agg.language_loc_suggested_agent[lang] = agg.language_loc_suggested_agent.get(lang, 0.0) + loc_sug
+        if loc_add:
+            agg.language_loc_added_agent[lang] = agg.language_loc_added_agent.get(lang, 0.0) + loc_add
+
+
 def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
     if not agg:
         return {
@@ -1098,8 +1124,12 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
-            "metrics_loc_suggested_by_language_28d": "",
-            "metrics_loc_added_by_language_28d": "",
+            "metrics_loc_suggested_by_language_total_28d": "",
+            "metrics_loc_added_by_language_total_28d": "",
+            "metrics_loc_suggested_by_language_inline_28d": "",
+            "metrics_loc_added_by_language_inline_28d": "",
+            "metrics_loc_suggested_by_language_agent_28d": "",
+            "metrics_loc_added_by_language_agent_28d": "",
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
@@ -1165,8 +1195,12 @@ def metrics_row_for_user(agg: Optional[UserAgg]) -> Dict[str, Any]:
         "metrics_top_model_28d": top_key(agg.model_counts),
         "metrics_top_language_28d": top_key(agg.language_counts),
         "metrics_top_feature_28d": format_feature_name(top_key(agg.feature_counts)),
-        "metrics_loc_suggested_by_language_28d": format_language_loc(agg.language_loc_suggested),
-        "metrics_loc_added_by_language_28d": format_language_loc(agg.language_loc_added),
+        "metrics_loc_suggested_by_language_total_28d": format_language_loc(agg.language_loc_suggested),
+        "metrics_loc_added_by_language_total_28d": format_language_loc(agg.language_loc_added),
+        "metrics_loc_suggested_by_language_inline_28d": format_language_loc(agg.language_loc_suggested_inline),
+        "metrics_loc_added_by_language_inline_28d": format_language_loc(agg.language_loc_added_inline),
+        "metrics_loc_suggested_by_language_agent_28d": format_language_loc(agg.language_loc_suggested_agent),
+        "metrics_loc_added_by_language_agent_28d": format_language_loc(agg.language_loc_added_agent),
     }
 
 # -------------------------
@@ -1308,8 +1342,12 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_top_model_28d           AI model used most often (e.g. gpt-4o)\n"
         f"  metrics_top_language_28d        Programming language with highest Copilot activity\n"
         f"  metrics_top_feature_28d         Copilot feature used most often (e.g. Inline Chat, Agent, Plan, Ask, Edit)\n"
-        f"  metrics_loc_suggested_by_language_28d Top languages by LOC proposed (e.g. 'Python 420, TypeScript 310')\n"
-        f"  metrics_loc_added_by_language_28d     Top languages by LOC applied (e.g. 'Python 380, TypeScript 280')\n\n"
+        f"  metrics_loc_suggested_by_language_total_28d  Top languages by LOC proposed, all features combined (e.g. 'Python 420, TypeScript 310')\n"
+        f"  metrics_loc_added_by_language_total_28d      Top languages by LOC applied, all features combined (e.g. 'Python 380, TypeScript 280')\n"
+        f"  metrics_loc_suggested_by_language_inline_28d Top languages by LOC proposed via inline (code_completion) suggestions\n"
+        f"  metrics_loc_added_by_language_inline_28d     Top languages by LOC accepted from inline suggestions\n"
+        f"  metrics_loc_suggested_by_language_agent_28d  Top languages by LOC proposed by Agent/Plan mode features\n"
+        f"  metrics_loc_added_by_language_agent_28d      Top languages by LOC applied in Agent/Plan mode\n\n"
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
         f"─────────────────────────────────────────\n"
@@ -1539,8 +1577,12 @@ def main():
         "metrics_top_model_28d",
         "metrics_top_language_28d",
         "metrics_top_feature_28d",
-        "metrics_loc_suggested_by_language_28d",
-        "metrics_loc_added_by_language_28d",
+        "metrics_loc_suggested_by_language_total_28d",
+        "metrics_loc_added_by_language_total_28d",
+        "metrics_loc_suggested_by_language_inline_28d",
+        "metrics_loc_added_by_language_inline_28d",
+        "metrics_loc_suggested_by_language_agent_28d",
+        "metrics_loc_added_by_language_agent_28d",
     ]
 
     # 5) Build output rows per team.
