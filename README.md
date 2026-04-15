@@ -471,7 +471,12 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_suggested_inline_28d` | **Lines of Code (LOC) suggested (inline only)** — lines suggested by inline ghost-text completions (`code_completion` feature) only. Chat, Edit, and Agent are tracked separately. Use this for accurate acceptance rate calculations |
 | `metrics_loc_added_inline_28d` | **Lines of Code (LOC) added (inline only)** — lines added from inline ghost-text completions only. Use this for accurate acceptance rate calculations |
 | `metrics_loc_acceptance_pct_inline_28d` | **LOC acceptance percentage (inline only)** — calculated as `(metrics_loc_added_inline_28d / metrics_loc_suggested_inline_28d) × 100` |
-| `premium_requests_complete_month` | **Premium requests (complete month)** — total premium (non-base-model) requests for the full calendar month. Source: GitHub billing API (same value as `billing_premium_requests_month`). Empty when the billing API is unavailable. See [Premium Request Tracking](#premium-request-tracking) for details |
+| `metrics_loc_suggested_chat_28d` | **LOC suggested (chat only)** — lines proposed in Chat features (`chat_panel_ask_mode`, `chat_inline`, `chat_panel_unknown_mode`) |
+| `metrics_loc_added_chat_28d` | **LOC added (chat only)** — lines applied from Chat suggestions |
+| `metrics_loc_suggested_edit_28d` | **LOC suggested (edit only)** — lines that Copilot proposed in Edit mode (`chat_panel_edit_mode`, `edit`, `edit_mode`). Reflects code blocks shown in the edit-mode chat panel before the user applies them |
+| `metrics_loc_added_edit_28d` | **LOC added (edit only)** — lines the user applied from Edit-mode suggestions |
+| `metrics_loc_suggested_agent_28d` | **LOC suggested (agent only)** — lines proposed by Agent/Plan/Custom mode features (`chat_panel_agent_mode`, `chat_panel_plan_mode`, `chat_panel_custom_mode`, `agent`). `agent_edit` (direct file writes) contributes 0 because the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes |
+| `metrics_loc_added_agent_28d` | **LOC added (agent only)** — lines applied in Agent/Plan mode, including all file writes via `agent_edit` |
 | `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g., `gpt-4o`, `claude-3.5-sonnet`) |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g., `python`, `typescript`) |
 | `metrics_top_feature_28d` | The Copilot feature the user used most often (e.g., `Inline Chat`, `Agent`, `Ask`, `Edit`) |
@@ -479,8 +484,19 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_added_by_language_total_28d` | Per-language breakdown of LOC added (accepted by the user) across all features, sorted by volume descending. See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
 | `metrics_loc_suggested_by_language_inline_28d` | Per-language breakdown of LOC suggested via inline (code_completion ghost-text) suggestions only |
 | `metrics_loc_added_by_language_inline_28d` | Per-language breakdown of LOC added from inline suggestions only |
-| `metrics_loc_suggested_by_language_agent_28d` | Per-language breakdown of LOC suggested by Agent/Plan mode features (chat_panel_agent_mode, chat_panel_plan_mode, chat_panel_custom_mode, agent_edit) |
+| `metrics_loc_suggested_by_language_agent_28d` | Per-language breakdown of LOC suggested by Agent/Plan mode features (`chat_panel_agent_mode`, `chat_panel_plan_mode`, `chat_panel_custom_mode`, `agent`, `agent_edit`) |
 | `metrics_loc_added_by_language_agent_28d` | Per-language breakdown of LOC applied in Agent/Plan mode |
+
+#### Billing — Calendar Month
+
+These columns reflect usage for the **full calendar month** (day 1 through last day). The default is the current month; override with `REPORT_YEAR` + `REPORT_MONTH` environment variables.
+
+| Column | Description |
+|--------|-------------|
+| `billing_period` | The billing month queried, formatted `YYYY-MM` (e.g., `2026-03` for March 2026). Empty when the billing API is unavailable |
+| `premium_requests_complete_month` | **Premium requests (complete month)** — total premium (non-base-model) requests used in the full calendar month (`grossQuantity` from billing API). Source: `GET /enterprises/{ent}/settings/billing/premium_request/usage`. Empty when the billing API is unavailable. See [Premium Request Tracking](#premium-request-tracking) for details |
+| `billed_amount_month` | **Billed amount (month)** — amount actually charged for premium requests after the included-request quota is deducted (`netAmount` from billing API). Matches the "Billed amount" column in the GitHub billing UI. `0` when usage is within the included quota; empty when the billing API is unavailable |
+| `premium_requests_by_model_month` | **Per-model premium requests (month)** — breakdown of total premium requests consumed per AI model this month (combined included + billed, from `grossQuantity`). Format: `claude-sonnet-4 - 10, gpt-5.1 - 3` sorted by count descending. Empty when the billing API is unavailable or the response lacks model information |
 
 ---
 
@@ -515,9 +531,9 @@ Each breakdown column covers a distinct set of Copilot features (no overlap):
 
 #### Why can `metrics_loc_suggested_28d` be *less than* `metrics_loc_added_28d`?
 
-This is expected for heavy Agent users. The `agent_edit` sub-component of `metrics_loc_suggested_agent_28d` uses `loc_added + loc_deleted` as a proxy (because the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes). Meanwhile `loc_added` in agent mode can be very large when Copilot scaffolds entire files. So for users who rely heavily on Agent, `loc_added` will exceed `loc_suggested`.
+This is expected for heavy Agent users. The `agent_edit` feature covers direct file writes where Copilot writes changes straight into files, bypassing the suggestion UI. The GitHub API returns 0 for `loc_suggested_to_add_sum` for these writes, so the report faithfully records 0 for `agent_edit`'s contribution to `metrics_loc_suggested_agent_28d`. Meanwhile, those same file writes still count toward `loc_added`, so `loc_added` in agent mode can be very large when Copilot scaffolds entire files.
 
-**Example:** A developer uses Copilot Agent to scaffold a 200-line file directly via file writes (`agent_edit`). `loc_added` increases by 200 and `loc_deleted` by 50, so the proxy for that component is 250. But `loc_suggested_inline` (ghost-text) may only be 30 lines. The result: `loc_suggested_28d = 280`, `loc_added_28d = 200 + inline_added`.
+**Example:** A developer uses Copilot Agent to scaffold a 200-line file directly via file writes (`agent_edit`). `loc_added` increases by 200, but `loc_suggested` for that component is 0 (the API reports no suggestion UI was shown). Ghost-text inline suggestions may only account for 30 lines suggested. The result: `loc_suggested_28d = 30`, `loc_added_28d = 200 + inline_added`.
 
 **Conclusion:** `loc_added ≥ loc_suggested` is the norm for heavy Agent users, and is not a data error.
 
@@ -527,15 +543,15 @@ This is expected for heavy Agent users. The `agent_edit` sub-component of `metri
 
 #### The Problem
 
-The `_agent_` LOC columns mix two data sources:
+The `_agent_` LOC columns involve two distinct data sources:
 
-- **Inline / Chat / Edit / Agent chat-panel**: `loc_suggested` = `loc_suggested_to_add_sum` (lines Copilot displayed as a suggestion, from the API directly)
-- **`agent_edit` (direct file writes)**: `loc_suggested` = `loc_added + loc_deleted` (proxy — direct file writes bypass the suggestion step and the API returns 0 for `loc_suggested_to_add_sum`)
+- **Inline / Chat / Edit / Agent chat-panel features**: `loc_suggested` = `loc_suggested_to_add_sum` (lines Copilot displayed as a suggestion, from the API directly)
+- **`agent_edit` (direct file writes)**: `loc_suggested` = 0 (the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes; the report records this 0 faithfully)
 
 When you calculate `metrics_loc_added_28d / metrics_loc_suggested_28d`:
-- The numerator (`loc_added`) for agent_edit is large (all lines written)
-- The denominator (`loc_suggested`) for agent_edit is also large (same proxy), but they don't cancel cleanly across features
-- Result: acceptance rates are unreliable when mix of inline + agent is present
+- The numerator (`loc_added`) for agent_edit is large (all lines written directly to files)
+- The denominator (`loc_suggested`) for agent_edit is 0 — the two don't cancel cleanly across features
+- Result: acceptance rates are unreliable when a mix of inline + agent activity is present
 
 #### The Solution
 

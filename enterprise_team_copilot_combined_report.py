@@ -1454,7 +1454,7 @@ def main():
     if not billing_available:
         print(
             f"  [INFO] Billing API data unavailable for {billing_period_str}; "
-            f"billing_premium_requests_month and billing_billed_amount_month columns will be empty."
+            f"premium_requests_complete_month and billed_amount_month columns will be empty."
         )
 
     # 3) Metrics report and aggregate across all users
