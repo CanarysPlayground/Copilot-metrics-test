@@ -7,6 +7,7 @@
 - [Overview](#overview)
 - [Features](#features)
 - [Architecture](#architecture)
+- [GitHub API Endpoints](#github-api-endpoints)
 - [Prerequisites](#prerequisites)
 - [Setup](#setup)
   - [Installation](#installation)
@@ -119,8 +120,9 @@ The tool follows a straightforward data collection and aggregation flow:
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    USAGE METRICS COLLECTION                          │
-│  1. Request 28-day metrics report from Copilot Usage API             │
-│  2. Download CSV report from provided URL                            │
+│  1. Fetch metrics manifest from Copilot Metrics API                  │
+│     (GET …/copilot/metrics/reports/users-28-day/latest)             │
+│  2. Download ALL JSON report files listed in download_links          │
 │  3. Parse metrics for each user: interactions, completions,          │
 │     acceptances, LOC suggested/added/deleted, premium requests, etc. │
 │  4. Aggregate per-language breakdowns                                │
@@ -142,6 +144,24 @@ The tool follows a straightforward data collection and aggregation flow:
 │  • Support for multiple recipients per team                          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## GitHub API Endpoints
+
+All data is fetched exclusively from **GitHub's public REST API** (`https://api.github.com` by default, or the value of `API_BASE` / `GITHUB_API_BASE` for GitHub Enterprise Server).
+
+| Endpoint | Purpose | Auth scope |
+|----------|---------|------------|
+| `GET /enterprises/{slug}/teams` | List all enterprise teams | `read:enterprise` |
+| `GET /enterprises/{slug}/teams/{team_slug}/memberships` | List team members | `read:enterprise` |
+| `GET /enterprises/{slug}/copilot/billing/seats` | Copilot seat assignments & last-activity timestamps | `manage_billing:copilot` |
+| `GET /enterprises/{slug}/settings/billing/premium_request/usage` | Per-user premium request counts & billed amounts (calendar month) | `manage_billing:copilot` |
+| `GET /enterprises/{slug}/copilot/metrics/reports/users-28-day/latest` | 28-day rolling metrics manifest; returns `download_links` to one or more JSON report files | `manage_billing:copilot` |
+| `GET /scim/v2/enterprises/{slug}/Users` | User display names and emails for EMU enterprises | SCIM access |
+| `GET /users/{login}` | User display name and public email (non-EMU fallback) | public |
+
+> **Note:** The metrics manifest endpoint returns a JSON payload containing `download_links`. The script downloads **all** linked JSON files and combines their rows so that no activity data is missed (e.g. a separate file for IDE completions vs. chat interactions).
 
 ---
 
