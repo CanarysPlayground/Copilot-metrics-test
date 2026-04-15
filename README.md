@@ -121,8 +121,7 @@ The tool follows a straightforward data collection and aggregation flow:
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    USAGE METRICS COLLECTION                          │
 │  1. Fetch metrics manifest from Copilot Metrics API                  │
-│     (GET /enterprises/{slug}/copilot/metrics/reports/               │
-│      users-28-day/latest)                                            │
+│     (GET …/copilot/metrics/reports/users-28-day/latest)             │
 │  2. Download ALL JSON report files listed in download_links          │
 │  3. Parse metrics for each user: interactions, completions,          │
 │     acceptances, LOC suggested/added/deleted, premium requests, etc. │
