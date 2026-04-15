@@ -833,7 +833,7 @@ def format_model_language_loc(model_lang_dict: Dict[str, Dict[str, float]]) -> s
     """
     if not model_lang_dict:
         return ""
-    model_totals = {m: sum(v for v in lc.values()) for m, lc in model_lang_dict.items()}
+    model_totals = {m: sum(v for v in lang_counts.values()) for m, lang_counts in model_lang_dict.items()}
     parts = []
     for model in sorted(model_lang_dict, key=lambda m: model_totals.get(m, 0), reverse=True):
         lang_counts = model_lang_dict[model]
@@ -1400,7 +1400,9 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_loc_added_by_language_agent_28d      Top languages by LOC applied in Agent/Plan mode\n"
         f"  metrics_loc_suggested_by_model_language_28d  Per-model breakdown of LOC proposed, by language\n"
         f"                                               Format: 'claude-sonnet-4: java - 4, python - 20 | gpt-4o: java - 10'\n"
-        f"                                               Populated from the 28-day metrics report (flat NDJSON format).\n"
+        f"                                               Populated from the 28-day metrics report (flat NDJSON and nested\n"
+        f"                                               API formats; nested format only when the model field is present\n"
+        f"                                               on language entries).\n"
         f"                                               Models and languages sorted by LOC count descending.\n"
         f"  metrics_loc_added_by_model_language_28d      Per-model breakdown of LOC applied, by language\n"
         f"                                               Same format and source as metrics_loc_suggested_by_model_language_28d.\n\n"
