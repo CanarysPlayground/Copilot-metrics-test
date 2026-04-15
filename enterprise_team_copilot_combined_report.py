@@ -1322,7 +1322,7 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_acceptance_pct_28d      Acceptance rate: (acceptances / completions) × 100 %\n"
         f"  metrics_days_active_28d         Distinct calendar days with at least one Copilot interaction\n"
         f"  metrics_loc_suggested_28d       LOC Copilot proposed (= inline + chat + edit + agent; agent_edit contributes 0 — direct file writes have no suggestion UI)\n"
-        f"  metrics_loc_added_28d           LOC applied from Copilot (= inline + chat + edit + agent)\n"
+        f"  metrics_loc_added_28d           LOC applied from Copilot (= inline + chat + edit + agent + agent_edit; agent_edit = direct file writes)\n"
         f"  metrics_loc_deleted_28d         LOC deleted in Copilot-assisted edits\n"
         f"  metrics_loc_suggested_inline_28d      LOC proposed for inline completions (ghost-text; code_completion feature only)\n"
         f"  metrics_loc_added_inline_28d          LOC applied from inline completions\n"
