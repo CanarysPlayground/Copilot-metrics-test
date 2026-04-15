@@ -1217,7 +1217,7 @@ def _infer_model_language_loc_proportional(
     return result
 
 
-
+def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
     if not agg:
         return {
             "metrics_interactions_28d": "",
