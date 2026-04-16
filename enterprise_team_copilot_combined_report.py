@@ -158,7 +158,7 @@ def gh_get(url: str, headers: Dict[str, str], params=None, timeout=60) -> reques
         resp = SESSION.get(url, headers=headers, params=params, timeout=timeout)
         last = resp
 
-        if resp.status_code in (403, 429, 500, 502, 503, 504):
+        if resp.status_code in (429, 500, 502, 503, 504):
             retry_after = resp.headers.get("Retry-After")
             wait = int(retry_after) if retry_after and retry_after.isdigit() else min(30, 2 * attempt)
             time.sleep(wait)
@@ -710,11 +710,25 @@ def download_all_report_urls(urls: List[str]) -> List[Dict[str, Any]]:
     return all_rows
 
 def download_report_as_text(url: str) -> str:
-    r = requests.get(url, allow_redirects=True, timeout=180)
-    if r.status_code in (401, 403):
-        r = requests.get(url, headers={"Authorization": f"Bearer {GITHUB_TOKEN}"}, allow_redirects=True, timeout=180)
-    r.raise_for_status()
-    return r.text
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, 7):
+        try:
+            r = requests.get(url, allow_redirects=True, timeout=180)
+            if r.status_code in (401, 403):
+                r = requests.get(url, headers={"Authorization": f"Bearer {GITHUB_TOKEN}"}, allow_redirects=True, timeout=180)
+            if r.status_code in (429, 500, 502, 503, 504):
+                retry_after = r.headers.get("Retry-After")
+                wait = int(retry_after) if retry_after and retry_after.isdigit() else min(30, 2 * attempt)
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r.text
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            wait = min(30, 2 * attempt)
+            print(f"[WARN] Report download attempt {attempt} failed: {exc}. Retrying in {wait}s …")
+            time.sleep(wait)
+    raise RuntimeError(f"Failed to download report from {url} after 6 attempts") from last_exc
 
 def parse_report_payload(text: str) -> List[Dict[str, Any]]:
     try:
@@ -734,7 +748,11 @@ def parse_report_payload(text: str) -> List[Dict[str, Any]]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        row = json.loads(line)
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"[WARN] Skipping malformed NDJSON line: {line[:120]!r}")
+            continue
         if isinstance(row, dict):
             rows.append(row)
     return rows
