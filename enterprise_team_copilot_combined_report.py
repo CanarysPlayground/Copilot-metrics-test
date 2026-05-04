@@ -1178,8 +1178,18 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
     # features (including agent_edit).  agent_edit returns 0 from the API because it writes
     # directly to files and has no suggestion UI, but we report that 0 faithfully rather than
     # substituting a proxy so that this column reflects only genuine suggestion data.
-    agent_loc_suggested = _sum_feature_loc(agg.feature_loc_suggested, _AGENT_FEATURES)
-    agent_loc_added = _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
+    #
+    # Guard: if the user has zero interactions across all agent features, force agent LOC to 0.
+    # The GitHub API sometimes reports loc_added_sum under agent_edit for users who only used
+    # inline completions (metrics_interactions_28d == 0).  Since agent mode cannot add lines
+    # without at least one user-initiated interaction, this is spurious data and is zeroed out.
+    agent_interactions = sum(agg.feature_counts.get(feat, 0.0) for feat in _AGENT_FEATURES)
+    if agent_interactions > 0:
+        agent_loc_suggested = _sum_feature_loc(agg.feature_loc_suggested, _AGENT_FEATURES)
+        agent_loc_added = _sum_feature_loc(agg.feature_loc_added, _AGENT_FEATURES)
+    else:
+        agent_loc_suggested = 0
+        agent_loc_added = 0
 
     # NOTE: metrics_loc_suggested_28d is the sum of its four breakdown columns
     # (inline + chat + edit + agent).  All four use only the raw loc_suggested_to_add_sum
@@ -1219,8 +1229,8 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
         "metrics_loc_added_by_language_total_28d": format_language_loc(agg.language_loc_added),
         "metrics_loc_suggested_by_language_inline_28d": format_language_loc(agg.language_loc_suggested_inline),
         "metrics_loc_added_by_language_inline_28d": format_language_loc(agg.language_loc_added_inline),
-        "metrics_loc_suggested_by_language_agent_28d": format_language_loc(agg.language_loc_suggested_agent),
-        "metrics_loc_added_by_language_agent_28d": format_language_loc(agg.language_loc_added_agent),
+        "metrics_loc_suggested_by_language_agent_28d": format_language_loc(agg.language_loc_suggested_agent) if agent_interactions > 0 else "",
+        "metrics_loc_added_by_language_agent_28d": format_language_loc(agg.language_loc_added_agent) if agent_interactions > 0 else "",
     }
 
 # -------------------------
