@@ -942,7 +942,12 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg = UserAgg(user=login)
             users[login] = agg
 
-        agg.interactions += to_num(r.get("user_initiated_interaction_count"))
+        # Track whether top-level interaction count was provided for this row.
+        # If missing (None), we'll fall back to summing from totals_by_feature below.
+        # This distinguishes between "field not present" and "field present with value 0".
+        top_level_interactions_raw = r.get("user_initiated_interaction_count")
+        has_top_level_interactions = top_level_interactions_raw is not None
+        agg.interactions += to_num(top_level_interactions_raw)
         agg.completions += to_num(r.get("code_generation_activity_count"))
         agg.acceptances += to_num(r.get("code_acceptance_activity_count"))
 
@@ -1059,9 +1064,12 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(f, dict):
                     continue
                 feat = normalize_feature_name(f.get("feature"))
-                agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + to_num(
-                    f.get("user_initiated_interaction_count")
-                )
+                feat_interaction_count = to_num(f.get("user_initiated_interaction_count"))
+                agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + feat_interaction_count
+                # If top-level interaction count was missing/zero, use the per-feature
+                # counts as a fallback to populate agg.interactions.
+                if not has_top_level_interactions:
+                    agg.interactions += feat_interaction_count
 
                 # Store LoC per feature for refined acceptance percentage calculation.
                 # Use get_loc_field_value so that both new field names
