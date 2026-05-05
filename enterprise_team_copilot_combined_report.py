@@ -1130,25 +1130,36 @@ def _route_language_loc(agg: "UserAgg", feat: str, lang: str, loc_sug: float, lo
 
 
 def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
+    # When no metrics data exists for a user, return 0 for numeric columns and empty
+    # string for text columns.  This ensures that users with active_status="active"
+    # (derived from the seat API's last_activity_at) but no metrics API data still
+    # show explicit zeros rather than blank cells.
+    #
+    # Note: The metrics API and seat API are independent data sources.  A user can
+    # have recent activity recorded by the seat API (making them "active") but no
+    # corresponding metrics data due to:
+    # - Metrics API lag or data retention differences
+    # - Activity in features not captured by the metrics API
+    # - API permission/visibility differences
     if not agg:
         return {
-            "metrics_interactions_28d": "",
-            "metrics_completions_28d": "",
-            "metrics_acceptances_28d": "",
-            "metrics_acceptance_pct_28d": "",
-            "metrics_days_active_28d": "",
-            "metrics_loc_suggested_28d": "",
-            "metrics_loc_added_28d": "",
-            "metrics_loc_deleted_28d": "",
-            "metrics_loc_suggested_inline_28d": "",
-            "metrics_loc_added_inline_28d": "",
-            "metrics_loc_acceptance_pct_inline_28d": "",
-            "metrics_loc_suggested_chat_28d": "",
-            "metrics_loc_added_chat_28d": "",
-            "metrics_loc_suggested_edit_28d": "",
-            "metrics_loc_added_edit_28d": "",
-            "metrics_loc_suggested_agent_28d": "",
-            "metrics_loc_added_agent_28d": "",
+            "metrics_interactions_28d": 0,
+            "metrics_completions_28d": 0,
+            "metrics_acceptances_28d": 0,
+            "metrics_acceptance_pct_28d": 0,
+            "metrics_days_active_28d": 0,
+            "metrics_loc_suggested_28d": 0,
+            "metrics_loc_added_28d": 0,
+            "metrics_loc_deleted_28d": 0,
+            "metrics_loc_suggested_inline_28d": 0,
+            "metrics_loc_added_inline_28d": 0,
+            "metrics_loc_acceptance_pct_inline_28d": 0,
+            "metrics_loc_suggested_chat_28d": 0,
+            "metrics_loc_added_chat_28d": 0,
+            "metrics_loc_suggested_edit_28d": 0,
+            "metrics_loc_added_edit_28d": 0,
+            "metrics_loc_suggested_agent_28d": 0,
+            "metrics_loc_added_agent_28d": 0,
             "metrics_top_model_28d": "",
             "metrics_top_language_28d": "",
             "metrics_top_feature_28d": "",
