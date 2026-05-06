@@ -480,9 +480,9 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 
 | Column | Description |
 |--------|-------------|
-| `metrics_interactions_28d` | Total number of user-initiated interactions with Copilot (prompts sent across all features — inline completions, chat, edit, agent) |
-| `metrics_completions_28d` | Number of code-generation events: how many times Copilot generated code for the user |
-| `metrics_acceptances_28d` | Number of times the user accepted a Copilot code suggestion |
+| `metrics_interactions_28d` | Number of prompts the user sent in Chat or Agent mode (e.g., Copilot Chat Ask/Edit/Agent/Plan panel). Does **not** include ghost-text inline completions — those are tracked separately in `metrics_completions_28d` |
+| `metrics_completions_28d` | Number of inline ghost-text code suggestions that Copilot showed to the user in the IDE editor (`code_completion` feature). Does **not** include Chat/Agent prompts — those are tracked in `metrics_interactions_28d` |
+| `metrics_acceptances_28d` | Number of inline ghost-text suggestions the user accepted (e.g., pressed Tab). Does **not** include Chat/Agent interactions |
 | `metrics_acceptance_pct_28d` | Acceptance rate as a percentage: `(acceptances / completions) × 100`. Indicates how relevant Copilot's suggestions are to the user |
 | `metrics_days_active_28d` | Number of distinct calendar days (UTC) the user had at least one Copilot interaction in the period |
 | `metrics_loc_suggested_28d` | **Lines of Code (LOC) suggested** — total lines of code that Copilot proposed to the user across all features. Equals the sum of `metrics_loc_suggested_inline_28d` + `metrics_loc_suggested_chat_28d` + `metrics_loc_suggested_edit_28d` + `metrics_loc_suggested_agent_28d` |
@@ -810,6 +810,6 @@ For issues or questions:
 
 ---
 
-**Last Updated:** 2025-01-15  
-**Version:** 1.0  
+**Last Updated:** 2026-05-06  
+**Version:** 1.1  
 **Maintained by:** GitHub Enterprise Team
