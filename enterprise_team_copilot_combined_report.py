@@ -974,10 +974,11 @@ _COPILOT_CHAT_SECTIONS: tuple[str, ...] = (
 def find_first_numeric_field(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
     """Return whether any field is present and the first present numeric value.
 
-    Missing fields and explicit zeros both return 0.0 as the value.  The interaction
-    aggregation intentionally treats zero top-level interactions as incomplete data
-    and falls back to detailed activity breakdowns because the report otherwise
-    shows users with real Copilot activity as having no interactions.
+    The boolean distinguishes missing fields from explicit zero values:
+    explicit zero returns (True, 0.0), while a missing field returns (False, 0.0).
+    The interaction aggregation intentionally treats zero top-level interactions
+    as incomplete data and falls back to detailed activity breakdowns because the
+    report otherwise shows users with real Copilot activity as having no interactions.
     """
     for field_name in fields:
         if row.get(field_name) is not None:
@@ -985,7 +986,12 @@ def find_first_numeric_field(row: Dict[str, Any], fields: tuple[str, ...]) -> Tu
     return False, 0.0
 
 def sum_nested_numeric_fields(obj: Any, fields: tuple[str, ...]) -> float:
-    """Sum numeric fields in a nested API object without double-counting parent totals."""
+    """Sum numeric fields in a nested API object without double-counting parent totals.
+
+    None or unsupported values return 0.0.  When both parent and child totals are
+    present, child totals are used and parent totals are ignored to avoid counting
+    the same activity twice.
+    """
     if isinstance(obj, list):
         return sum(sum_nested_numeric_fields(item, fields) for item in obj)
     if not isinstance(obj, dict):
@@ -1067,8 +1073,8 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
         # Track whether a top-level interaction count was provided for this row.
         # If missing or zero, fall back to the detailed feature/model/chat breakdowns below.
-        _, top_level_interactions = find_first_numeric_field(r, _INTERACTION_TOP_FIELDS)
-        if top_level_interactions:
+        has_top_level_interactions, top_level_interactions = find_first_numeric_field(r, _INTERACTION_TOP_FIELDS)
+        if has_top_level_interactions and top_level_interactions > 0:
             agg.interactions += top_level_interactions
         fallback_interactions_from_models = 0.0
         fallback_interactions_from_features = 0.0
