@@ -363,9 +363,13 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     """Select the best SCIM record from a list of candidates for a given GitHub login.
     
     Priority order:
-    1. Exact match on email local part (before @)
-    2. Exact match on scim_userName local part (before @)
-    3. First candidate (original first-come-first-served fallback)
+    1. Exact match on scim_userName (full login or base without enterprise suffix)
+    2. Exact match on email local part (before @), including dot/hyphen/underscore normalization
+    3. Exact match on scim_userName local part (before @)
+    4. Return empty dict when multiple candidates exist but none match confidently
+       (prevents assigning wrong email to users with similar names)
+    
+    When only a single candidate exists, it is returned directly.
     """
     if not candidates:
         return {}
@@ -376,6 +380,15 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     # Remove enterprise suffix if present (e.g., "atishayjain_newgen" -> "atishayjain")
     login_base = login_lower.split("_", 1)[0] if "_" in login_lower else login_lower
     
+    # Priority 0: Exact match on scim_userName (the most reliable identifier)
+    for c in candidates:
+        scim_user_name = (c.get("scim_userName") or "").lower().strip()
+        if scim_user_name == login_lower:
+            return c
+        # For EMU, userName might not include the suffix
+        if scim_user_name == login_base:
+            return c
+    
     # Priority 1: Exact match on email local part
     for c in candidates:
         email = (c.get("email") or "").lower()
@@ -384,28 +397,69 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
             # Check both the full login and the base (without suffix)
             if email_local == login_lower or email_local == login_base:
                 return c
-            # Also check variations (hyphen -> underscore, underscore -> hyphen)
-            email_local_normalized = email_local.replace("-", "_")
-            login_normalized = login_base.replace("-", "_")
-            if email_local_normalized == login_normalized:
+            # Normalize: replace dots and underscores with hyphens for comparison
+            # but ONLY if the lengths match after normalization (avoids partial matches)
+            email_local_normalized = email_local.replace(".", "-").replace("_", "-")
+            login_base_normalized = login_base.replace(".", "-").replace("_", "-")
+            if email_local_normalized == login_base_normalized:
                 return c
     
-    # Priority 2: Exact match on scim_userName local part
+    # Priority 2: Exact match on scim_userName local part (when userName is an email)
     for c in candidates:
         scim_user_name = (c.get("scim_userName") or "").lower()
         if "@" in scim_user_name:
             scim_local = scim_user_name.split("@", 1)[0]
             if scim_local == login_lower or scim_local == login_base:
                 return c
-            scim_local_normalized = scim_local.replace("-", "_")
-            login_normalized = login_base.replace("-", "_")
-            if scim_local_normalized == login_normalized:
+            scim_local_normalized = scim_local.replace(".", "-").replace("_", "-")
+            login_base_normalized = login_base.replace(".", "-").replace("_", "-")
+            if scim_local_normalized == login_base_normalized:
                 return c
-        elif scim_user_name == login_lower or scim_user_name == login_base:
-            return c
     
-    # Fallback: return first candidate
-    return candidates[0]
+    # No confident match found among multiple candidates.
+    # Return empty to allow the caller to fall back to direct SCIM API lookup
+    # rather than returning a potentially incorrect email.
+    return {}
+
+
+def fetch_scim_user_by_username(login: str) -> Dict[str, str]:
+    """Fetch a single SCIM user by their exact userName using the SCIM filter API.
+
+    Uses the endpoint: GET /scim/v2/enterprises/{enterprise}/Users?filter=userName eq "{login}"
+    This provides an exact match and avoids collisions from fuzzy index lookups.
+    Returns a dict with 'name' and 'email' keys, or empty dict if not found.
+    """
+    if not login:
+        return {}
+    url = f"{API_BASE}/scim/v2/enterprises/{ENTERPRISE_SLUG}/Users"
+    filter_str = f'userName eq "{login}"'
+    resp = gh_get(url, headers=HEADERS_SCIM, params={"filter": filter_str, "count": 1})
+
+    if resp.status_code in (401, 403, 404, 501):
+        return {}
+
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.RequestException:
+        return {}
+
+    payload = resp.json() or {}
+    resources = payload.get("Resources") or []
+    if not resources:
+        return {}
+
+    u = resources[0]
+    if not isinstance(u, dict):
+        return {}
+
+    name = pick_scim_name(u)
+    email = pick_scim_email(u)
+    scim_user_name = str(u.get("userName") or "").strip()
+    return {"name": name, "email": email, "scim_userName": scim_user_name}
+
+
+# Cache for individual SCIM lookups to avoid repeated API calls
+_scim_individual_cache: Dict[str, Dict[str, str]] = {}
 
 
 def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict[str, str]:
@@ -414,6 +468,10 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
     When multiple SCIM users map to the same lookup key (e.g., both "atishayjain@..."
     and "atishay-jain@..." normalize to "atishayjain"), this function selects the
     best match based on exact-match priority.
+
+    Falls back to a direct SCIM API call (filter by userName) when the index-based
+    lookup fails or returns ambiguous results, ensuring each user gets their own
+    correct email rather than a false match from name collisions.
     """
     if not login:
         return {}
@@ -421,22 +479,36 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
 
     candidates = scim_index.get(key)
     if candidates:
-        return _select_best_scim_match(candidates, login)
+        result = _select_best_scim_match(candidates, login)
+        if result:
+            return result
 
     base = key
     if "_" in key:
         base = key.split("_", 1)[0]
         candidates = scim_index.get(base)
         if candidates:
-            return _select_best_scim_match(candidates, login)
+            result = _select_best_scim_match(candidates, login)
+            if result:
+                return result
 
     suffix = derive_suffix_token()
     if suffix:
         candidates = scim_index.get(f"{base}_{suffix}")
         if candidates:
-            return _select_best_scim_match(candidates, login)
+            result = _select_best_scim_match(candidates, login)
+            if result:
+                return result
 
-    return {}
+    # Fallback: use the SCIM filter API to look up the user by their exact userName.
+    # This avoids false matches caused by fuzzy key collisions in the index
+    # (e.g., users with similar names where '.' is replaced with '-').
+    if key in _scim_individual_cache:
+        return _scim_individual_cache[key]
+
+    result = fetch_scim_user_by_username(login)
+    _scim_individual_cache[key] = result
+    return result
 
 # -------------------------
 # Fallback: GitHub user lookup (non-EMU enterprises)
