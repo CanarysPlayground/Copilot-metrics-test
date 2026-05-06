@@ -300,6 +300,7 @@ def generate_login_candidates_from_email(email: str) -> Set[str]:
     variants.add(local)
     variants.add(local.replace(".", ""))
     variants.add(local.replace(".", "-"))
+    variants.add(local.replace(".", "_"))
     variants.add(local.replace("_", "-"))
     variants.add(re.sub(r"[^a-z0-9\-]", "", local))
     variants.add(re.sub(r"[^a-z0-9]", "", local))
@@ -373,9 +374,18 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
         return candidates[0]
     
     login_lower = login.lower().strip()
-    # Remove enterprise suffix if present (e.g., "atishayjain_newgen" -> "atishayjain")
-    login_base = login_lower.split("_", 1)[0] if "_" in login_lower else login_lower
-    
+    # Strip the enterprise suffix from the end of the login to get the meaningful base.
+    # For "first_last_enterprise" this yields "first_last"; for "rahulkumar_enterprise"
+    # this yields "rahulkumar".  This is more precise than splitting on the first
+    # underscore which would incorrectly give just "first" for multi-part logins.
+    _sfx = derive_suffix_token()
+    if _sfx and login_lower.endswith(f"_{_sfx}"):
+        login_base = login_lower[: -(len(_sfx) + 1)]
+    elif "_" in login_lower:
+        login_base = login_lower.split("_", 1)[0]
+    else:
+        login_base = login_lower
+
     # Priority 1: Exact match on email local part
     for c in candidates:
         email = (c.get("email") or "").lower()
@@ -384,9 +394,9 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
             # Check both the full login and the base (without suffix)
             if email_local == login_lower or email_local == login_base:
                 return c
-            # Also check variations (hyphen -> underscore, underscore -> hyphen)
-            email_local_normalized = email_local.replace("-", "_")
-            login_normalized = login_base.replace("-", "_")
+            # Normalize separators: treat hyphens, dots, and underscores as equivalent
+            email_local_normalized = email_local.replace("-", "_").replace(".", "_")
+            login_normalized = login_base.replace("-", "_").replace(".", "_")
             if email_local_normalized == login_normalized:
                 return c
     
@@ -397,8 +407,8 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
             scim_local = scim_user_name.split("@", 1)[0]
             if scim_local == login_lower or scim_local == login_base:
                 return c
-            scim_local_normalized = scim_local.replace("-", "_")
-            login_normalized = login_base.replace("-", "_")
+            scim_local_normalized = scim_local.replace("-", "_").replace(".", "_")
+            login_normalized = login_base.replace("-", "_").replace(".", "_")
             if scim_local_normalized == login_normalized:
                 return c
         elif scim_user_name == login_lower or scim_user_name == login_base:
@@ -414,23 +424,45 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
     When multiple SCIM users map to the same lookup key (e.g., both "atishayjain@..."
     and "atishay-jain@..." normalize to "atishayjain"), this function selects the
     best match based on exact-match priority.
+
+    For multi-part logins such as "first_last_enterprise" the enterprise suffix is
+    stripped from the *end* before falling back to a shorter base.  This avoids the
+    previous behaviour where "first_last_enterprise".split("_", 1)[0] == "first"
+    would cause every user whose login starts with the same first name to receive the
+    same SCIM record.
     """
     if not login:
         return {}
     key = login.lower().strip()
 
+    # Step 1: exact match on the full login key.
     candidates = scim_index.get(key)
     if candidates:
         return _select_best_scim_match(candidates, login)
 
+    suffix = derive_suffix_token()
+
+    # Step 2: strip the known enterprise suffix from the *end* of the login.
+    # "first_last_enterprise" → base "first_last" (precise, retains full name).
     base = key
-    if "_" in key:
-        base = key.split("_", 1)[0]
+    if suffix and key.endswith(f"_{suffix}"):
+        base = key[: -(len(suffix) + 1)]
         candidates = scim_index.get(base)
         if candidates:
             return _select_best_scim_match(candidates, login)
 
-    suffix = derive_suffix_token()
+    # Step 3: first-underscore fallback for simple logins where the suffix was not
+    # recognised or where base == first_segment (e.g. "rahulkumar_enterprise" where
+    # base is already "rahulkumar").
+    if "_" in key:
+        first_base = key.split("_", 1)[0]
+        if first_base != base:
+            candidates = scim_index.get(first_base)
+            if candidates:
+                return _select_best_scim_match(candidates, login)
+
+    # Step 4: try base with the suffix appended (covers SCIM userNames that include
+    # the suffix, e.g. "first_last_enterprise" indexed from email "first.last@…").
     if suffix:
         candidates = scim_index.get(f"{base}_{suffix}")
         if candidates:
