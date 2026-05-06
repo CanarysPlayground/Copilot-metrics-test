@@ -948,7 +948,7 @@ def normalize_feature_name(feature_value: Optional[str]) -> str:
     """
     return (feature_value or DEFAULT_FEATURE_NAME).lower()
 
-_INTERACTION_TOP_FIELDS: tuple[str, ...] = (
+_INTERACTION_COUNT_FIELDS: tuple[str, ...] = (
     "user_initiated_interaction_count",
     "interaction_count",
     "interactions_count",
@@ -1010,6 +1010,10 @@ def sum_nested_numeric_fields(obj: Any, fields: tuple[str, ...]) -> float:
 def sum_copilot_chat_interactions(row: Dict[str, Any]) -> float:
     """Sum chat-style Copilot interactions from current nested metrics API sections."""
     return sum(sum_nested_numeric_fields(row.get(section), _CHAT_INTERACTION_FIELDS) for section in _COPILOT_CHAT_SECTIONS)
+
+def should_use_interaction_fallback(has_top_level_interactions: bool, top_level_interactions: float) -> bool:
+    """Return True when detailed interaction counts should replace the top-level value."""
+    return not has_top_level_interactions or top_level_interactions == 0
 
 @dataclass
 class UserAgg:
@@ -1074,8 +1078,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
         # Track whether a top-level interaction count was provided for this row.
         # If missing or zero, fall back to the detailed feature/model/chat breakdowns below.
-        has_top_level_interactions, top_level_interactions = get_first_numeric_field_with_presence(r, _INTERACTION_TOP_FIELDS)
-        if has_top_level_interactions and top_level_interactions > 0:
+        has_top_level_interactions, top_level_interactions = get_first_numeric_field_with_presence(r, _INTERACTION_COUNT_FIELDS)
+        use_interaction_fallback = should_use_interaction_fallback(has_top_level_interactions, top_level_interactions)
+        if not use_interaction_fallback:
             agg.interactions += top_level_interactions
         fallback_interactions_from_models = 0.0
         fallback_interactions_from_features = 0.0
@@ -1115,7 +1120,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(mf, dict):
                     continue
                 model = mf.get("model") or "unknown"
-                _, interaction_count = get_first_numeric_field_with_presence(mf, _INTERACTION_TOP_FIELDS)
+                _, interaction_count = get_first_numeric_field_with_presence(mf, _INTERACTION_COUNT_FIELDS)
                 fallback_interactions_from_models += interaction_count
                 agg.model_counts[model] = agg.model_counts.get(model, 0.0) + interaction_count
 
@@ -1197,7 +1202,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(f, dict):
                     continue
                 feat = normalize_feature_name(f.get("feature"))
-                _, feat_interaction_count = get_first_numeric_field_with_presence(f, _INTERACTION_TOP_FIELDS)
+                _, feat_interaction_count = get_first_numeric_field_with_presence(f, _INTERACTION_COUNT_FIELDS)
                 fallback_interactions_from_features += feat_interaction_count
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + feat_interaction_count
 
@@ -1221,7 +1226,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             # Note: 'unknown' is an intentional catch-all for rows without feature data
             feat = normalize_feature_name(r.get("feature"))
 
-            _, val = get_first_numeric_field_with_presence(r, _INTERACTION_TOP_FIELDS)
+            _, val = get_first_numeric_field_with_presence(r, _INTERACTION_COUNT_FIELDS)
             fallback_interactions_from_features += val
             agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
             
@@ -1239,10 +1244,11 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg.loc_added += loc_added_val
             agg.loc_deleted += loc_deleted_val
 
-        if not has_top_level_interactions or top_level_interactions == 0:
+        if use_interaction_fallback:
             fallback_interactions = 0.0
-            # Choose the first non-zero detailed count so an empty feature breakdown
-            # does not hide useful model or nested chat activity.
+            # Prefer feature totals because they are the report's most specific
+            # per-mode source, then model totals, then nested chat sections for
+            # current metrics shapes that omit the older totals_by_* arrays.
             for fallback_source in (
                 fallback_interactions_from_features,
                 fallback_interactions_from_models,
