@@ -1009,11 +1009,12 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg = UserAgg(user=login)
             users[login] = agg
 
-        # Track whether top-level interaction count was provided for this row.
-        # If missing (None), we'll fall back to summing from totals_by_feature below.
-        # This distinguishes between "field not present" and "field present with value 0".
+        # Track whether top-level interaction count was provided AND non-zero for this row.
+        # If missing (None) or zero, we'll fall back to summing from totals_by_feature below.
+        # This ensures the fallback triggers when the API reports 0 at the top level but has
+        # non-zero values in the per-feature breakdown (e.g., agent_edit LOC without interactions).
         top_level_interactions_raw = r.get("user_initiated_interaction_count")
-        has_top_level_interactions = top_level_interactions_raw is not None
+        has_top_level_interactions = top_level_interactions_raw is not None and to_num(top_level_interactions_raw) > 0
         agg.interactions += to_num(top_level_interactions_raw)
         agg.completions += to_num(r.get("code_generation_activity_count"))
         agg.acceptances += to_num(r.get("code_acceptance_activity_count"))
