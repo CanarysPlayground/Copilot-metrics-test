@@ -315,7 +315,15 @@ def generate_login_candidates_from_email(email: str) -> Set[str]:
     return out
 
 def build_scim_index(scim_users):
-    idx = {}
+    """Build a lookup index from SCIM users.
+    
+    The index maps multiple lookup keys (email local parts, userName variations, etc.)
+    to SCIM user records. To handle cases where different users generate the same derived
+    key (e.g., "atishayjain@..." and "atishay-jain@..." both produce "atishayjain" after
+    removing hyphens), each key maps to a LIST of candidate records. The `scim_lookup`
+    function will then select the best match based on exact-match priority.
+    """
+    idx: Dict[str, List[Dict[str, str]]] = {}
     for u in scim_users:
         if not isinstance(u, dict):
             continue
@@ -323,6 +331,8 @@ def build_scim_index(scim_users):
         name = pick_scim_name(u)
         email = pick_scim_email(u)
         scim_user_name = str(u.get("userName") or "").strip()
+
+        user_record = {"name": name, "email": email, "scim_userName": scim_user_name}
 
         keys: Set[str] = set()
 
@@ -340,34 +350,91 @@ def build_scim_index(scim_users):
         for k in keys:
             if not k:
                 continue
-            idx.setdefault(
-                k,
-                {"name": name, "email": email, "scim_userName": scim_user_name},
-            )
+            if k not in idx:
+                idx[k] = []
+            # Avoid duplicate entries for the same user record under the same key.
+            # We check if an identical record already exists before appending.
+            if user_record not in idx[k]:
+                idx[k].append(user_record)
 
     return idx
 
-def scim_lookup(scim_index: Dict[str, Dict[str, str]], login: str) -> Dict[str, str]:
+def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dict[str, str]:
+    """Select the best SCIM record from a list of candidates for a given GitHub login.
+    
+    Priority order:
+    1. Exact match on email local part (before @)
+    2. Exact match on scim_userName local part (before @)
+    3. First candidate (original first-come-first-served fallback)
+    """
+    if not candidates:
+        return {}
+    if len(candidates) == 1:
+        return candidates[0]
+    
+    login_lower = login.lower().strip()
+    # Remove enterprise suffix if present (e.g., "atishayjain_newgen" -> "atishayjain")
+    login_base = login_lower.split("_", 1)[0] if "_" in login_lower else login_lower
+    
+    # Priority 1: Exact match on email local part
+    for c in candidates:
+        email = (c.get("email") or "").lower()
+        if "@" in email:
+            email_local = email.split("@", 1)[0]
+            # Check both the full login and the base (without suffix)
+            if email_local == login_lower or email_local == login_base:
+                return c
+            # Also check variations (hyphen -> underscore, underscore -> hyphen)
+            email_local_normalized = email_local.replace("-", "_")
+            login_normalized = login_base.replace("-", "_")
+            if email_local_normalized == login_normalized:
+                return c
+    
+    # Priority 2: Exact match on scim_userName local part
+    for c in candidates:
+        scim_user_name = (c.get("scim_userName") or "").lower()
+        if "@" in scim_user_name:
+            scim_local = scim_user_name.split("@", 1)[0]
+            if scim_local == login_lower or scim_local == login_base:
+                return c
+            scim_local_normalized = scim_local.replace("-", "_")
+            login_normalized = login_base.replace("-", "_")
+            if scim_local_normalized == login_normalized:
+                return c
+        elif scim_user_name == login_lower or scim_user_name == login_base:
+            return c
+    
+    # Fallback: return first candidate
+    return candidates[0]
+
+
+def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict[str, str]:
+    """Look up SCIM user data for a GitHub login.
+    
+    When multiple SCIM users map to the same lookup key (e.g., both "atishayjain@..."
+    and "atishay-jain@..." normalize to "atishayjain"), this function selects the
+    best match based on exact-match priority.
+    """
     if not login:
         return {}
     key = login.lower().strip()
 
-    hit = scim_index.get(key)
-    if hit:
-        return hit
+    candidates = scim_index.get(key)
+    if candidates:
+        return _select_best_scim_match(candidates, login)
 
     base = key
     if "_" in key:
         base = key.split("_", 1)[0]
-        hit = scim_index.get(base)
-        if hit:
-            return hit
+        candidates = scim_index.get(base)
+        if candidates:
+            return _select_best_scim_match(candidates, login)
 
     suffix = derive_suffix_token()
     if suffix:
-        hit = scim_index.get(f"{base}_{suffix}")
-        if hit:
-            return hit
+        candidates = scim_index.get(f"{base}_{suffix}")
+        if candidates:
+            return _select_best_scim_match(candidates, login)
 
     return {}
 
