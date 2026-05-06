@@ -284,6 +284,10 @@ def derive_suffix_token() -> str:
         return LOGIN_SUFFIX
     return (ENTERPRISE_SLUG.split("-", 1)[0] or "").strip().lower()
 
+# Cache the suffix token at module load time (LOGIN_SUFFIX and ENTERPRISE_SLUG
+# are resolved from env vars once at startup and never change during a run).
+_SUFFIX_TOKEN: str = derive_suffix_token()
+
 def generate_login_candidates_from_email(email: str) -> Set[str]:
     out: Set[str] = set()
     email = (email or "").strip().lower()
@@ -294,7 +298,7 @@ def generate_login_candidates_from_email(email: str) -> Set[str]:
     if not local:
         return out
 
-    suffix = derive_suffix_token()
+    suffix = _SUFFIX_TOKEN
 
     variants = set()
     variants.add(local)
@@ -322,15 +326,27 @@ def _sep_norm(s: str) -> str:
 
 
 def build_scim_index(scim_users):
-    """Build a lookup index from SCIM users.
-    
-    The index maps multiple lookup keys (email local parts, userName variations, etc.)
-    to SCIM user records. To handle cases where different users generate the same derived
-    key (e.g., "atishayjain@..." and "atishay-jain@..." both produce "atishayjain" after
-    removing hyphens), each key maps to a LIST of candidate records. The `scim_lookup`
-    function will then select the best match based on exact-match priority.
+    """Build lookup indices from SCIM users.
+
+    Returns a tuple ``(by_username, heuristic_idx)``:
+
+    * ``by_username`` – a direct ``Dict[str, Dict]`` keyed by
+      ``scim_userName.lower()``.  In EMU enterprises the SCIM ``userName``
+      field equals the GitHub login exactly (e.g. ``"akash-goel2_newgen"``),
+      so this dict provides an unambiguous 1:1 lookup for every managed user.
+      It is checked first in :func:`scim_lookup` and eliminates all heuristic
+      ambiguity for users who share the same display name or whose email local
+      parts are similar.
+
+    * ``heuristic_idx`` – the original multi-key index that maps email local
+      parts, separator-normalised variants, and derived login candidates to a
+      *list* of candidate records.  It is used as a fallback for non-EMU
+      enterprises (where ``userName`` is typically an email address rather than
+      a GitHub login) or for any login not found in ``by_username``.
     """
-    idx: Dict[str, List[Dict[str, str]]] = {}
+    by_username: Dict[str, Dict[str, str]] = {}
+    heuristic_idx: Dict[str, List[Dict[str, str]]] = {}
+
     for u in scim_users:
         if not isinstance(u, dict):
             continue
@@ -341,6 +357,12 @@ def build_scim_index(scim_users):
 
         user_record = {"name": name, "email": email, "scim_userName": scim_user_name}
 
+        # ── Primary: exact userName key (unique per SCIM spec) ──────────────
+        if scim_user_name and "@" not in scim_user_name:
+            # Non-email userName (typical for EMU): the value IS the GitHub login.
+            by_username[scim_user_name.lower()] = user_record
+
+        # ── Secondary: heuristic index (email-derived keys) ─────────────────
         keys: Set[str] = set()
 
         if email:
@@ -357,14 +379,12 @@ def build_scim_index(scim_users):
         for k in keys:
             if not k:
                 continue
-            if k not in idx:
-                idx[k] = []
-            # Avoid duplicate entries for the same user record under the same key.
-            # We check if an identical record already exists before appending.
-            if user_record not in idx[k]:
-                idx[k].append(user_record)
+            if k not in heuristic_idx:
+                heuristic_idx[k] = []
+            if user_record not in heuristic_idx[k]:
+                heuristic_idx[k].append(user_record)
 
-    return idx
+    return by_username, heuristic_idx
 
 def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dict[str, str]:
     """Select the best SCIM record from a list of candidates for a given GitHub login.
@@ -388,7 +408,7 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     # For "first_last_enterprise" this yields "first_last"; for "rahulkumar_enterprise"
     # this yields "rahulkumar".  This is more precise than splitting on the first
     # underscore which would incorrectly give just "first" for multi-part logins.
-    _sfx = derive_suffix_token()
+    _sfx = _SUFFIX_TOKEN
     if _sfx and login_lower.endswith(f"_{_sfx}"):
         login_base = login_lower[: -(len(_sfx) + 1)]
     elif "_" in login_lower:
@@ -432,31 +452,46 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     return candidates[0]
 
 
-def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict[str, str]:
+def scim_lookup(
+    scim_by_username: Dict[str, Dict[str, str]],
+    scim_index: Dict[str, List[Dict[str, str]]],
+    login: str,
+) -> Dict[str, str]:
     """Look up SCIM user data for a GitHub login.
-    
-    When multiple SCIM users map to the same lookup key (e.g., both "atishayjain@..."
-    and "atishay-jain@..." normalize to "atishayjain"), this function selects the
-    best match based on exact-match priority.
 
-    For multi-part logins such as "first_last_enterprise" the enterprise suffix is
-    stripped from the *end* before falling back to a shorter base.  This avoids the
-    previous behaviour where "first_last_enterprise".split("_", 1)[0] == "first"
-    would cause every user whose login starts with the same first name to receive the
-    same SCIM record.
+    Checks two sources in order:
+
+    1. **Direct userName index** (``scim_by_username``): In EMU enterprises the
+       SCIM ``userName`` value equals the GitHub login exactly.  A hit here is
+       unambiguous — no heuristics required — and handles every case where two
+       or more users share the same display name or have email local parts that
+       look similar (e.g. ``akash-goel_newgen`` vs ``akash-goel2_newgen``).
+
+    2. **Heuristic index** (``scim_index``): Keyed by email local parts,
+       separator-normalised variants, and derived login candidates.  Used for
+       non-EMU enterprises (where ``userName`` is an email address rather than a
+       login) or for any login not resolved by the direct index.  When multiple
+       records collide in a bucket, ``_select_best_scim_match`` picks the best
+       one based on exact/normalised matching.
     """
     if not login:
         return {}
     key = login.lower().strip()
 
-    # Step 1: exact match on the full login key.
+    # ── Step 0: exact SCIM userName match (highest confidence) ──────────────
+    # In EMU enterprises every managed user has scim_userName == GitHub login.
+    record = scim_by_username.get(key)
+    if record:
+        return record
+
+    # ── Step 1: exact key match in heuristic index ───────────────────────────
     candidates = scim_index.get(key)
     if candidates:
         return _select_best_scim_match(candidates, login)
 
-    suffix = derive_suffix_token()
+    suffix = _SUFFIX_TOKEN
 
-    # Step 2: strip the known enterprise suffix from the *end* of the login.
+    # ── Step 2: strip the known enterprise suffix from the *end* of the login.
     # "first_last_enterprise" → base "first_last" (precise, retains full name).
     base = key
     if suffix and key.endswith(f"_{suffix}"):
@@ -465,9 +500,8 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
         if candidates:
             return _select_best_scim_match(candidates, login)
 
-    # Step 3: first-underscore fallback for simple logins where the suffix was not
-    # recognised or where base == first_segment (e.g. "rahulkumar_enterprise" where
-    # base is already "rahulkumar").
+    # ── Step 3: first-underscore fallback for simple logins where the suffix
+    # was not recognised (e.g. "rahulkumar_enterprise" → "rahulkumar").
     if "_" in key:
         first_base = key.split("_", 1)[0]
         if first_base != base:
@@ -475,8 +509,8 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
             if candidates:
                 return _select_best_scim_match(candidates, login)
 
-    # Step 4: try base with the suffix appended (covers SCIM userNames that include
-    # the suffix, e.g. "first_last_enterprise" indexed from email "first.last@…").
+    # ── Step 4: base + suffix (covers SCIM userNames that include the suffix,
+    # e.g. "first_last_enterprise" indexed from email "first.last@…").
     if suffix:
         candidates = scim_index.get(f"{base}_{suffix}")
         if candidates:
@@ -1694,9 +1728,9 @@ def main():
     # 1) SCIM index (name/email) — only available for EMU enterprises
     print("Fetching SCIM users...")
     scim_users = fetch_all_scim_users()
-    scim_index = build_scim_index(scim_users)
+    scim_by_username, scim_index = build_scim_index(scim_users)
     scim_available = bool(scim_users)
-    print(f"SCIM users fetched: {len(scim_users)}; SCIM index keys: {len(scim_index)}")
+    print(f"SCIM users fetched: {len(scim_users)}; direct userName index: {len(scim_by_username)}; heuristic index keys: {len(scim_index)}")
     if not scim_available:
         print("[INFO] SCIM not available – will fall back to GitHub users API for display names and public emails.")
 
@@ -1886,7 +1920,7 @@ def main():
             if not login:
                 continue
 
-            scim = scim_lookup(scim_index, login)
+            scim = scim_lookup(scim_by_username, scim_index, login)
 
             seat = seats_by_login.get(login)
 
