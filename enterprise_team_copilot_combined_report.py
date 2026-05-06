@@ -972,7 +972,13 @@ _COPILOT_CHAT_SECTIONS: tuple[str, ...] = (
 )
 
 def find_first_numeric_field(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
-    """Return whether any field is present and the first present numeric value."""
+    """Return whether any field is present and the first present numeric value.
+
+    Missing fields and explicit zeros both return 0.0 as the value.  The interaction
+    aggregation intentionally treats zero top-level interactions as incomplete data
+    and falls back to detailed activity breakdowns because the report otherwise
+    shows users with real Copilot activity as having no interactions.
+    """
     for field_name in fields:
         if row.get(field_name) is not None:
             return True, to_num(row.get(field_name))
@@ -1228,6 +1234,8 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
         if top_level_interactions == 0:
             fallback_interactions = 0.0
+            # Choose the first non-zero detailed count so an empty feature breakdown
+            # does not hide useful model or nested chat activity.
             for fallback_source in (
                 fallback_interactions_from_features,
                 fallback_interactions_from_models,
