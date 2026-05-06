@@ -953,6 +953,7 @@ _INTERACTION_COUNT_FIELDS: tuple[str, ...] = (
     "interaction_count",
     "interactions_count",
     "total_interactions",
+    # Also used for flat report rows; nested chat sections use _CHAT_INTERACTION_FIELDS.
     "total_chats",
     "copilot_total_requests",
 )
@@ -971,7 +972,7 @@ _COPILOT_CHAT_SECTIONS: tuple[str, ...] = (
     "copilot_mobile_chat",
 )
 
-def get_first_numeric_field_with_presence(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
+def get_first_present_field(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
     """Return whether any field is present and the first present numeric value.
 
     The boolean distinguishes missing fields from explicit zero values:
@@ -998,12 +999,13 @@ def sum_nested_numeric_fields(obj: Any, fields: tuple[str, ...]) -> float:
     if not isinstance(obj, dict):
         return 0.0
 
-    child_total = sum(
+    child_values = [
         sum_nested_numeric_fields(value, fields)
         for key, value in obj.items()
-        if key not in fields
-    )
-    if child_total > 0:
+        if key not in fields and isinstance(value, (dict, list))
+    ]
+    child_total = sum(child_values)
+    if child_values:
         return child_total
     return sum(to_num(obj.get(field_name)) for field_name in fields)
 
@@ -1078,7 +1080,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
         # Track whether a top-level interaction count was provided for this row.
         # If missing or zero, fall back to the detailed feature/model/chat breakdowns below.
-        has_top_level_interactions, top_level_interactions = get_first_numeric_field_with_presence(r, _INTERACTION_COUNT_FIELDS)
+        has_top_level_interactions, top_level_interactions = get_first_present_field(r, _INTERACTION_COUNT_FIELDS)
         use_interaction_fallback = should_use_interaction_fallback(has_top_level_interactions, top_level_interactions)
         if not use_interaction_fallback:
             agg.interactions += top_level_interactions
@@ -1120,7 +1122,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(mf, dict):
                     continue
                 model = mf.get("model") or "unknown"
-                _, interaction_count = get_first_numeric_field_with_presence(mf, _INTERACTION_COUNT_FIELDS)
+                _, interaction_count = get_first_present_field(mf, _INTERACTION_COUNT_FIELDS)
                 fallback_interactions_from_models += interaction_count
                 agg.model_counts[model] = agg.model_counts.get(model, 0.0) + interaction_count
 
@@ -1202,7 +1204,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(f, dict):
                     continue
                 feat = normalize_feature_name(f.get("feature"))
-                _, feat_interaction_count = get_first_numeric_field_with_presence(f, _INTERACTION_COUNT_FIELDS)
+                _, feat_interaction_count = get_first_present_field(f, _INTERACTION_COUNT_FIELDS)
                 fallback_interactions_from_features += feat_interaction_count
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + feat_interaction_count
 
@@ -1226,7 +1228,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             # Note: 'unknown' is an intentional catch-all for rows without feature data
             feat = normalize_feature_name(r.get("feature"))
 
-            _, val = get_first_numeric_field_with_presence(r, _INTERACTION_COUNT_FIELDS)
+            _, val = get_first_present_field(r, _INTERACTION_COUNT_FIELDS)
             fallback_interactions_from_features += val
             agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
             
@@ -1254,7 +1256,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 fallback_interactions_from_models,
                 fallback_interactions_from_nested_chat,
             ):
-                if fallback_source:
+                if fallback_source > 0:
                     fallback_interactions = fallback_source
                     break
             agg.interactions += fallback_interactions
