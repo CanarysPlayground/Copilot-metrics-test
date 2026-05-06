@@ -363,10 +363,10 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     """Select the best SCIM record from a list of candidates for a given GitHub login.
     
     Priority order:
-    1. Exact match on scim_userName (full login or base without enterprise suffix)
-    2. Exact match on email local part (before @), including dot/hyphen/underscore normalization
-    3. Exact match on scim_userName local part (before @)
-    4. Return empty dict when multiple candidates exist but none match confidently
+    0. Exact match on scim_userName (full login or base without enterprise suffix)
+    1. Exact match on email local part (before @), including dot/hyphen/underscore normalization
+    2. Exact match on scim_userName local part (when userName is an email)
+    3. Return empty dict when multiple candidates exist but none match confidently
        (prevents assigning wrong email to users with similar names)
     
     When only a single candidate exists, it is returned directly.
