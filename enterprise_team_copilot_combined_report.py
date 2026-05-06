@@ -948,6 +948,76 @@ def normalize_feature_name(feature_value: Optional[str]) -> str:
     """
     return (feature_value or DEFAULT_FEATURE_NAME).lower()
 
+_INTERACTION_COUNT_FIELDS: tuple[str, ...] = (
+    "user_initiated_interaction_count",
+    "interaction_count",
+    "interactions_count",
+    "total_interactions",
+    # Also used for flat rows where chat counts are already top-level interaction
+    # counts; nested chat sections use _CHAT_INTERACTION_FIELDS to walk child models.
+    "total_chats",
+    "copilot_total_requests",
+)
+
+_CHAT_INTERACTION_FIELDS: tuple[str, ...] = (
+    "total_chats",
+    "total_chat_turns",
+    "total_chat_messages",
+    "total_chat_interactions",
+)
+
+_COPILOT_CHAT_SECTIONS: tuple[str, ...] = (
+    "copilot_ide_chat",
+    "copilot_dotcom_chat",
+    "copilot_cli",
+    "copilot_mobile_chat",
+)
+
+def get_first_present_field(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
+    """Return whether any field is present and the first present numeric value.
+
+    The boolean distinguishes missing fields from explicit zero values:
+    explicit zero returns (True, 0.0), while a missing field returns (False, 0.0).
+    The interaction aggregation can still intentionally treat explicit zero
+    top-level interactions as incomplete data and fall back to detailed activity
+    breakdowns because the report otherwise shows users with real Copilot activity
+    as having no interactions.
+    """
+    for field_name in fields:
+        if row.get(field_name) is not None:
+            return True, to_num(row.get(field_name))
+    return False, 0.0
+
+def sum_nested_numeric_fields(obj: Any, fields: tuple[str, ...]) -> float:
+    """Sum numeric fields in a nested API object without double-counting parent totals.
+
+    None or unsupported values return 0.0.  When both parent and child totals are
+    present, child totals are used and parent totals are ignored to avoid counting
+    the same activity twice.
+    """
+    if isinstance(obj, list):
+        return sum(sum_nested_numeric_fields(item, fields) for item in obj)
+    if not isinstance(obj, dict):
+        return 0.0
+
+    child_values = [
+        sum_nested_numeric_fields(value, fields)
+        for key, value in obj.items()
+        if key not in fields and isinstance(value, (dict, list))
+    ]
+    child_total = sum(child_values)
+    if child_total > 0:
+        return child_total
+    return sum(to_num(obj.get(field_name)) for field_name in fields)
+
+def sum_copilot_chat_interactions(row: Dict[str, Any]) -> float:
+    """Sum chat-style Copilot interactions from current nested metrics API sections."""
+    return sum(sum_nested_numeric_fields(row.get(section), _CHAT_INTERACTION_FIELDS) for section in _COPILOT_CHAT_SECTIONS)
+
+def should_use_interaction_fallback(has_top_level_interactions: bool, top_level_interactions: float) -> bool:
+    """Return True when detailed interaction counts should replace the top-level value."""
+    return not has_top_level_interactions or top_level_interactions <= 0
+
 @dataclass
 class UserAgg:
     user: str
@@ -1009,12 +1079,15 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg = UserAgg(user=login)
             users[login] = agg
 
-        # Track whether top-level interaction count was provided for this row.
-        # If missing (None), we'll fall back to summing from totals_by_feature below.
-        # This distinguishes between "field not present" and "field present with value 0".
-        top_level_interactions_raw = r.get("user_initiated_interaction_count")
-        has_top_level_interactions = top_level_interactions_raw is not None
-        agg.interactions += to_num(top_level_interactions_raw)
+        # Track whether a top-level interaction count was provided for this row.
+        # If missing or zero, fall back to the detailed feature/model/chat breakdowns below.
+        has_top_level_interactions, top_level_interactions = get_first_present_field(r, _INTERACTION_COUNT_FIELDS)
+        use_interaction_fallback = should_use_interaction_fallback(has_top_level_interactions, top_level_interactions)
+        if not use_interaction_fallback:
+            agg.interactions += top_level_interactions
+        fallback_interactions_from_models = 0.0
+        fallback_interactions_from_features = 0.0
+        fallback_interactions_from_nested_chat = sum_copilot_chat_interactions(r)
         agg.completions += to_num(r.get("code_generation_activity_count"))
         agg.acceptances += to_num(r.get("code_acceptance_activity_count"))
 
@@ -1050,7 +1123,8 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(mf, dict):
                     continue
                 model = mf.get("model") or "unknown"
-                interaction_count = to_num(mf.get("user_initiated_interaction_count"))
+                _, interaction_count = get_first_present_field(mf, _INTERACTION_COUNT_FIELDS)
+                fallback_interactions_from_models += interaction_count
                 agg.model_counts[model] = agg.model_counts.get(model, 0.0) + interaction_count
 
                 # Accumulate premium requests only when no top-level explicit field is present.
@@ -1131,12 +1205,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(f, dict):
                     continue
                 feat = normalize_feature_name(f.get("feature"))
-                feat_interaction_count = to_num(f.get("user_initiated_interaction_count"))
+                _, feat_interaction_count = get_first_present_field(f, _INTERACTION_COUNT_FIELDS)
+                fallback_interactions_from_features += feat_interaction_count
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + feat_interaction_count
-                # If top-level interaction count was missing/zero, use the per-feature
-                # counts as a fallback to populate agg.interactions.
-                if not has_top_level_interactions:
-                    agg.interactions += feat_interaction_count
 
                 # Store LoC per feature for refined acceptance percentage calculation.
                 # Use get_loc_field_value so that both new field names
@@ -1157,8 +1228,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             # Flat NDJSON format: feature and LOC fields are top-level per row.
             # Note: 'unknown' is an intentional catch-all for rows without feature data
             feat = normalize_feature_name(r.get("feature"))
-            
-            val = to_num(r.get("user_initiated_interaction_count")) or to_num(r.get("copilot_total_requests"))
+
+            _, val = get_first_present_field(r, _INTERACTION_COUNT_FIELDS)
+            fallback_interactions_from_features += val
             agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
             
             # Store LoC per feature for refined acceptance percentage calculation
@@ -1174,6 +1246,21 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg.loc_suggested += loc_suggested_val
             agg.loc_added += loc_added_val
             agg.loc_deleted += loc_deleted_val
+
+        if use_interaction_fallback:
+            fallback_interactions = 0.0
+            # Prefer feature totals because they are the report's most specific
+            # per-mode source, then model totals, then nested chat sections for
+            # current metrics shapes that omit the older totals_by_* arrays.
+            for fallback_source in (
+                fallback_interactions_from_features,
+                fallback_interactions_from_models,
+                fallback_interactions_from_nested_chat,
+            ):
+                if fallback_source > 0:
+                    fallback_interactions = fallback_source
+                    break
+            agg.interactions += fallback_interactions
 
     return users
 
