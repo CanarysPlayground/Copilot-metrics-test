@@ -1332,6 +1332,33 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if fallback_source > 0:
                     fallback_interactions = fallback_source
                     break
+
+            # Last-resort inference: if all interaction sources report 0 but this row
+            # has non-zero LOC from any feature (e.g. agent_edit writes files but reports
+            # user_initiated_interaction_count = 0), infer at least 1 interaction.
+            # LOC can only be generated as a result of a user prompt, so a row with LOC
+            # data but zero interactions indicates the API split the prompt and its
+            # resulting file writes across different feature entries or rows.
+            if fallback_interactions == 0:
+                row_loc = (
+                    get_loc_field_value(r, "loc_added_sum", "loc_added")
+                    + get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
+                )
+                if row_loc == 0 and isinstance(tbf, list):
+                    row_loc = sum(
+                        get_loc_field_value(f, "loc_added_sum", "loc_added")
+                        + get_loc_field_value(f, "loc_suggested_to_add_sum", "loc_suggested")
+                        for f in tbf if isinstance(f, dict)
+                    )
+                if row_loc == 0 and isinstance(tlf, list):
+                    row_loc = sum(
+                        get_loc_field_value(lf, "loc_added_sum", "loc_added")
+                        + get_loc_field_value(lf, "loc_suggested_to_add_sum", "loc_suggested")
+                        for lf in tlf if isinstance(lf, dict)
+                    )
+                if row_loc > 0:
+                    fallback_interactions = 1.0
+
             agg.interactions += fallback_interactions
 
     return users
