@@ -497,7 +497,7 @@ All `_28d` columns aggregate the user's Copilot activity over the 28 days preced
 | `metrics_loc_added_edit_28d` | **LOC added (edit only)** — lines the user applied from Edit-mode suggestions |
 | `metrics_loc_suggested_agent_28d` | **LOC suggested (agent only)** — lines proposed by Agent/Plan/Custom mode features (`chat_panel_agent_mode`, `chat_panel_plan_mode`, `chat_panel_custom_mode`, `agent`). `agent_edit` (direct file writes) contributes 0 because the GitHub API does not populate `loc_suggested_to_add_sum` for direct file writes |
 | `metrics_loc_added_agent_28d` | **LOC added (agent only)** — lines applied in Agent/Plan mode, including all file writes via `agent_edit` |
-| `metrics_top_model_28d` | The AI model that the user interacted with most often (e.g., `gpt-4o`, `claude-3.5-sonnet`) |
+| `metrics_top_model_28d` | Most frequently used AI model by interaction count (e.g., `gpt-4o`, `claude-3.5-sonnet`). Note: This differs from `premium_requests_by_model_month` which reflects billing-weighted premium request consumption |
 | `metrics_top_language_28d` | The programming language with the highest Copilot activity for this user (e.g., `python`, `typescript`) |
 | `metrics_top_feature_28d` | The Copilot feature the user used most often (e.g., `Inline Chat`, `Agent`, `Ask`, `Edit`) |
 | `metrics_loc_suggested_by_language_total_28d` | Per-language breakdown of LOC suggested across all features (inline + chat + edit + agent; `agent_edit` contributes 0 — direct file writes have no suggestion UI), sorted by volume descending (e.g., `python 1250, java 560, typescript 320`). See [Per-Language Breakdown](#per-language-breakdown) for details on `unknown` and `others` values |
