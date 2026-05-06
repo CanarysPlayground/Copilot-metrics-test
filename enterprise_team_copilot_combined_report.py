@@ -321,11 +321,6 @@ def _sep_norm(s: str) -> str:
     return re.sub(r"[-._]", "_", s)
 
 
-def _strip_sep(s: str) -> str:
-    """Remove all separator characters, keeping only alphanumerics."""
-    return re.sub(r"[^a-z0-9]", "", s)
-
-
 def build_scim_index(scim_users):
     """Build a lookup index from SCIM users.
     
@@ -373,17 +368,21 @@ def build_scim_index(scim_users):
 
 def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dict[str, str]:
     """Select the best SCIM record from a list of candidates for a given GitHub login.
-    
+
     Priority order:
-    1. Exact match on email local part (before @)
-    2. Exact match on scim_userName local part (before @)
-    3. First candidate (original first-come-first-served fallback)
+    1. Exact scim_userName == login (highest confidence: in EMU the SCIM userName IS
+       the GitHub login, so this is an unambiguous unique-key match).
+    2. Exact email local part == login or login_base (literal, no normalization).
+    3. Separator-normalized email local part == separator-normalized login_base
+       (treats hyphens, dots, underscores as equivalent).
+    4. scim_userName local part (before ``@``) exact or sep-normalized match.
+    5. First candidate (fallback).
     """
     if not candidates:
         return {}
     if len(candidates) == 1:
         return candidates[0]
-    
+
     login_lower = login.lower().strip()
     # Strip the enterprise suffix from the end of the login to get the meaningful base.
     # For "first_last_enterprise" this yields "first_last"; for "rahulkumar_enterprise"
@@ -397,19 +396,29 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     else:
         login_base = login_lower
 
-    # Priority 1: Exact match on email local part
+    # Priority 1: Exact scim_userName == login (EMU: scim_userName IS the GitHub login).
+    for c in candidates:
+        scim_user_name = (c.get("scim_userName") or "").lower()
+        if scim_user_name and "@" not in scim_user_name and scim_user_name == login_lower:
+            return c
+
+    # Priority 2: Exact email local part match (literal, no normalization).
     for c in candidates:
         email = (c.get("email") or "").lower()
         if "@" in email:
             email_local = email.split("@", 1)[0]
-            # Check both the full login and the base (without suffix)
             if email_local == login_lower or email_local == login_base:
                 return c
-            # Normalize separators: treat hyphens, dots, and underscores as equivalent
+
+    # Priority 3: Separator-normalized email local part match.
+    for c in candidates:
+        email = (c.get("email") or "").lower()
+        if "@" in email:
+            email_local = email.split("@", 1)[0]
             if _sep_norm(email_local) == _sep_norm(login_base):
                 return c
-    
-    # Priority 2: Exact match on scim_userName local part
+
+    # Priority 4: scim_userName local part (before ``@``) exact or sep-normalized match.
     for c in candidates:
         scim_user_name = (c.get("scim_userName") or "").lower()
         if "@" in scim_user_name:
@@ -418,9 +427,7 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
                 return c
             if _sep_norm(scim_local) == _sep_norm(login_base):
                 return c
-        elif scim_user_name == login_lower or scim_user_name == login_base:
-            return c
-    
+
     # Fallback: return first candidate
     return candidates[0]
 
@@ -476,59 +483,6 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
             return _select_best_scim_match(candidates, login)
 
     return {}
-
-
-def _email_matches_login(email: str, login: str) -> bool:
-    """Return True if the email local part reasonably corresponds to the GitHub login.
-
-    This validates SCIM email data against the login to detect misconfiguration where
-    two different users have been assigned the same email address in SCIM.  When a SCIM
-    record is found for a login but the email local part (after normalizing separators)
-    does not correspond to that login, the email is likely misassigned.
-
-    Multiple normalization levels are tried in order:
-    1. Separator-normalized equality: ``-``, ``.``, ``_`` all treated as ``_``
-       (handles "first.last@" for login "first-last_ent" → "first_last" == "first_last").
-    2. All-separators-stripped equality
-       (handles "f.lastname@" for login "flastname_ent" → "flastname" == "flastname").
-
-    The check is applied against all reasonable login bases:
-    - The full login as-is
-    - Login with the derived enterprise suffix stripped from the end
-      ("first_last_ent" → "first_last")
-    - Login split on the first underscore
-      ("rahul_ent" → "rahul" when suffix is not recognised)
-
-    Returns True (accept the email) when any base matches, or when a confident
-    determination cannot be made (no email, no ``@`` in email).
-    """
-    if not email or "@" not in email:
-        return True
-
-    email_local = email.split("@", 1)[0].lower().strip()
-    if not email_local:
-        return True
-
-    login_lower = login.lower().strip()
-    _sfx = derive_suffix_token()
-
-    # Build the set of candidate login bases to compare against.
-    bases: Set[str] = {login_lower}
-    if _sfx and login_lower.endswith(f"_{_sfx}"):
-        bases.add(login_lower[: -(len(_sfx) + 1)])
-    if "_" in login_lower:
-        bases.add(login_lower.split("_", 1)[0])
-
-    email_sep = _sep_norm(email_local)
-    email_stripped = _strip_sep(email_local)
-
-    for base in bases:
-        if email_sep == _sep_norm(base):
-            return True
-        if email_stripped == _strip_sep(base):
-            return True
-
-    return False
 
 
 # -------------------------
@@ -1933,35 +1887,6 @@ def main():
                 continue
 
             scim = scim_lookup(scim_index, login)
-
-            # Validate the SCIM email against the login to avoid showing a
-            # misassigned or duplicate email.  In SCIM-managed (EMU) enterprises
-            # it is possible for two users to end up with the same email in their
-            # SCIM records (IdP misconfiguration).  When the email local part does
-            # not correspond to this login (e.g. "akash-goel" for login
-            # "akash-goel2_newgen"), blank the email so the fallback below can try
-            # the GitHub users API instead.
-            scim_email = scim.get("email", "") if scim else ""
-            if scim and scim_email and not _email_matches_login(scim_email, login):
-                # The email from the SCIM emails[] array doesn't correspond to this
-                # login (IdP misconfiguration – e.g. two accounts sharing the same
-                # email value).  Before giving up, try the SCIM userName field: in
-                # EMU enterprises userName is the user's unique IdP UPN and is
-                # typically their actual email address even when the emails[] array
-                # contains stale / duplicated data.
-                scim_uname = scim.get("scim_userName", "")
-                if scim_uname and "@" in scim_uname and _email_matches_login(scim_uname, login):
-                    print(
-                        f"  [INFO] SCIM emails[] value '{scim_email}' doesn't match login "
-                        f"'{login}' – using scim userName '{scim_uname}' as email instead."
-                    )
-                    scim = {**scim, "email": scim_uname}
-                else:
-                    print(
-                        f"  [WARN] SCIM email '{scim_email}' does not match login "
-                        f"'{login}' – clearing to prevent duplicate email in report."
-                    )
-                    scim = {**scim, "email": ""}
 
             seat = seats_by_login.get(login)
 
