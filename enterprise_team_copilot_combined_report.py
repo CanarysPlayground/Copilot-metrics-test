@@ -953,7 +953,8 @@ _INTERACTION_COUNT_FIELDS: tuple[str, ...] = (
     "interaction_count",
     "interactions_count",
     "total_interactions",
-    # Also used for flat report rows; nested chat sections use _CHAT_INTERACTION_FIELDS.
+    # Also used for flat rows where chat counts are already top-level interaction
+    # counts; nested chat sections use _CHAT_INTERACTION_FIELDS to walk child models.
     "total_chats",
     "copilot_total_requests",
 )
@@ -1005,7 +1006,7 @@ def sum_nested_numeric_fields(obj: Any, fields: tuple[str, ...]) -> float:
         if key not in fields and isinstance(value, (dict, list))
     ]
     child_total = sum(child_values)
-    if child_values:
+    if child_total > 0:
         return child_total
     return sum(to_num(obj.get(field_name)) for field_name in fields)
 
@@ -1015,7 +1016,7 @@ def sum_copilot_chat_interactions(row: Dict[str, Any]) -> float:
 
 def should_use_interaction_fallback(has_top_level_interactions: bool, top_level_interactions: float) -> bool:
     """Return True when detailed interaction counts should replace the top-level value."""
-    return not has_top_level_interactions or top_level_interactions == 0
+    return not has_top_level_interactions or top_level_interactions <= 0
 
 @dataclass
 class UserAgg:
