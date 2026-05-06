@@ -315,6 +315,17 @@ def generate_login_candidates_from_email(email: str) -> Set[str]:
 
     return out
 
+
+def _sep_norm(s: str) -> str:
+    """Normalize separators: hyphens, dots, and underscores all become underscores."""
+    return re.sub(r"[-._]", "_", s)
+
+
+def _strip_sep(s: str) -> str:
+    """Remove all separator characters, keeping only alphanumerics."""
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
 def build_scim_index(scim_users):
     """Build a lookup index from SCIM users.
     
@@ -395,9 +406,7 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
             if email_local == login_lower or email_local == login_base:
                 return c
             # Normalize separators: treat hyphens, dots, and underscores as equivalent
-            email_local_normalized = email_local.replace("-", "_").replace(".", "_")
-            login_normalized = login_base.replace("-", "_").replace(".", "_")
-            if email_local_normalized == login_normalized:
+            if _sep_norm(email_local) == _sep_norm(login_base):
                 return c
     
     # Priority 2: Exact match on scim_userName local part
@@ -407,9 +416,7 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
             scim_local = scim_user_name.split("@", 1)[0]
             if scim_local == login_lower or scim_local == login_base:
                 return c
-            scim_local_normalized = scim_local.replace("-", "_").replace(".", "_")
-            login_normalized = login_base.replace("-", "_").replace(".", "_")
-            if scim_local_normalized == login_normalized:
+            if _sep_norm(scim_local) == _sep_norm(login_base):
                 return c
         elif scim_user_name == login_lower or scim_user_name == login_base:
             return c
@@ -469,16 +476,6 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
             return _select_best_scim_match(candidates, login)
 
     return {}
-
-
-def _sep_norm(s: str) -> str:
-    """Normalize separators: hyphens, dots, and underscores all become underscores."""
-    return re.sub(r"[-._]", "_", s)
-
-
-def _strip_sep(s: str) -> str:
-    """Remove all separator characters, keeping only alphanumerics."""
-    return re.sub(r"[^a-z0-9]", "", s)
 
 
 def _email_matches_login(email: str, login: str) -> bool:
@@ -1946,11 +1943,25 @@ def main():
             # the GitHub users API instead.
             scim_email = scim.get("email", "") if scim else ""
             if scim and scim_email and not _email_matches_login(scim_email, login):
-                print(
-                    f"  [WARN] SCIM email '{scim_email}' does not match login "
-                    f"'{login}' – clearing to prevent duplicate email in report."
-                )
-                scim = {**scim, "email": ""}
+                # The email from the SCIM emails[] array doesn't correspond to this
+                # login (IdP misconfiguration – e.g. two accounts sharing the same
+                # email value).  Before giving up, try the SCIM userName field: in
+                # EMU enterprises userName is the user's unique IdP UPN and is
+                # typically their actual email address even when the emails[] array
+                # contains stale / duplicated data.
+                scim_uname = scim.get("scim_userName", "")
+                if scim_uname and "@" in scim_uname and _email_matches_login(scim_uname, login):
+                    print(
+                        f"  [INFO] SCIM emails[] value '{scim_email}' doesn't match login "
+                        f"'{login}' – using scim userName '{scim_uname}' as email instead."
+                    )
+                    scim = {**scim, "email": scim_uname}
+                else:
+                    print(
+                        f"  [WARN] SCIM email '{scim_email}' does not match login "
+                        f"'{login}' – clearing to prevent duplicate email in report."
+                    )
+                    scim = {**scim, "email": ""}
 
             seat = seats_by_login.get(login)
 
