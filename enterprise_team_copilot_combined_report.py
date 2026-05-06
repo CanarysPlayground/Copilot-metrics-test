@@ -971,7 +971,7 @@ _COPILOT_CHAT_SECTIONS: tuple[str, ...] = (
     "copilot_mobile_chat",
 )
 
-def get_first_present_numeric_value(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
+def find_first_numeric_field(row: Dict[str, Any], fields: tuple[str, ...]) -> Tuple[bool, float]:
     """Return whether any field is present and the first present numeric value."""
     for field_name in fields:
         if row.get(field_name) is not None:
@@ -1061,7 +1061,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
 
         # Track whether a top-level interaction count was provided for this row.
         # If missing or zero, fall back to the detailed feature/model/chat breakdowns below.
-        has_top_level_interactions, top_level_interactions = get_first_present_numeric_value(r, _INTERACTION_TOP_FIELDS)
+        _, top_level_interactions = find_first_numeric_field(r, _INTERACTION_TOP_FIELDS)
         if top_level_interactions:
             agg.interactions += top_level_interactions
         fallback_interactions_from_models = 0.0
@@ -1102,7 +1102,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(mf, dict):
                     continue
                 model = mf.get("model") or "unknown"
-                _, interaction_count = get_first_present_numeric_value(mf, _INTERACTION_TOP_FIELDS)
+                _, interaction_count = find_first_numeric_field(mf, _INTERACTION_TOP_FIELDS)
                 fallback_interactions_from_models += interaction_count
                 agg.model_counts[model] = agg.model_counts.get(model, 0.0) + interaction_count
 
@@ -1184,7 +1184,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(f, dict):
                     continue
                 feat = normalize_feature_name(f.get("feature"))
-                _, feat_interaction_count = get_first_present_numeric_value(f, _INTERACTION_TOP_FIELDS)
+                _, feat_interaction_count = find_first_numeric_field(f, _INTERACTION_TOP_FIELDS)
                 fallback_interactions_from_features += feat_interaction_count
                 agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + feat_interaction_count
 
@@ -1208,7 +1208,7 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             # Note: 'unknown' is an intentional catch-all for rows without feature data
             feat = normalize_feature_name(r.get("feature"))
 
-            _, val = get_first_present_numeric_value(r, _INTERACTION_TOP_FIELDS)
+            _, val = find_first_numeric_field(r, _INTERACTION_TOP_FIELDS)
             fallback_interactions_from_features += val
             agg.feature_counts[feat] = agg.feature_counts.get(feat, 0.0) + val
             
@@ -1226,12 +1226,16 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg.loc_added += loc_added_val
             agg.loc_deleted += loc_deleted_val
 
-        if not has_top_level_interactions or top_level_interactions == 0:
-            fallback_interactions = fallback_interactions_from_features
-            if fallback_interactions == 0:
-                fallback_interactions = fallback_interactions_from_models
-            if fallback_interactions == 0:
-                fallback_interactions = fallback_interactions_from_nested_chat
+        if top_level_interactions == 0:
+            fallback_interactions = 0.0
+            for fallback_source in (
+                fallback_interactions_from_features,
+                fallback_interactions_from_models,
+                fallback_interactions_from_nested_chat,
+            ):
+                if fallback_source:
+                    fallback_interactions = fallback_source
+                    break
             agg.interactions += fallback_interactions
 
     return users
