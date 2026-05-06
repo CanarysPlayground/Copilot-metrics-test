@@ -470,6 +470,70 @@ def scim_lookup(scim_index: Dict[str, List[Dict[str, str]]], login: str) -> Dict
 
     return {}
 
+
+def _sep_norm(s: str) -> str:
+    """Normalize separators: hyphens, dots, and underscores all become underscores."""
+    return re.sub(r"[-._]", "_", s)
+
+
+def _strip_sep(s: str) -> str:
+    """Remove all separator characters, keeping only alphanumerics."""
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def _email_matches_login(email: str, login: str) -> bool:
+    """Return True if the email local part reasonably corresponds to the GitHub login.
+
+    This validates SCIM email data against the login to detect misconfiguration where
+    two different users have been assigned the same email address in SCIM.  When a SCIM
+    record is found for a login but the email local part (after normalizing separators)
+    does not correspond to that login, the email is likely misassigned.
+
+    Multiple normalization levels are tried in order:
+    1. Separator-normalized equality: ``-``, ``.``, ``_`` all treated as ``_``
+       (handles "first.last@" for login "first-last_ent" → "first_last" == "first_last").
+    2. All-separators-stripped equality
+       (handles "f.lastname@" for login "flastname_ent" → "flastname" == "flastname").
+
+    The check is applied against all reasonable login bases:
+    - The full login as-is
+    - Login with the derived enterprise suffix stripped from the end
+      ("first_last_ent" → "first_last")
+    - Login split on the first underscore
+      ("rahul_ent" → "rahul" when suffix is not recognised)
+
+    Returns True (accept the email) when any base matches, or when a confident
+    determination cannot be made (no email, no ``@`` in email).
+    """
+    if not email or "@" not in email:
+        return True
+
+    email_local = email.split("@", 1)[0].lower().strip()
+    if not email_local:
+        return True
+
+    login_lower = login.lower().strip()
+    _sfx = derive_suffix_token()
+
+    # Build the set of candidate login bases to compare against.
+    bases: Set[str] = {login_lower}
+    if _sfx and login_lower.endswith(f"_{_sfx}"):
+        bases.add(login_lower[: -(len(_sfx) + 1)])
+    if "_" in login_lower:
+        bases.add(login_lower.split("_", 1)[0])
+
+    email_sep = _sep_norm(email_local)
+    email_stripped = _strip_sep(email_local)
+
+    for base in bases:
+        if email_sep == _sep_norm(base):
+            return True
+        if email_stripped == _strip_sep(base):
+            return True
+
+    return False
+
+
 # -------------------------
 # Fallback: GitHub user lookup (non-EMU enterprises)
 # -------------------------
@@ -1872,6 +1936,22 @@ def main():
                 continue
 
             scim = scim_lookup(scim_index, login)
+
+            # Validate the SCIM email against the login to avoid showing a
+            # misassigned or duplicate email.  In SCIM-managed (EMU) enterprises
+            # it is possible for two users to end up with the same email in their
+            # SCIM records (IdP misconfiguration).  When the email local part does
+            # not correspond to this login (e.g. "akash-goel" for login
+            # "akash-goel2_newgen"), blank the email so the fallback below can try
+            # the GitHub users API instead.
+            scim_email = scim.get("email", "") if scim else ""
+            if scim and scim_email and not _email_matches_login(scim_email, login):
+                print(
+                    f"  [WARN] SCIM email '{scim_email}' does not match login "
+                    f"'{login}' – clearing to prevent duplicate email in report."
+                )
+                scim = {**scim, "email": ""}
+
             seat = seats_by_login.get(login)
 
             if not scim:
@@ -1893,16 +1973,18 @@ def main():
                     # and EMU enterprises with an incomplete SCIM sync.
                     scim = fetch_github_user_info(login)
 
-                # If the seat assignee had a name but no email, try the GitHub
-                # users API to fill the gap.  Results are cached in _gh_user_cache,
-                # so this call is free if we already fetched this user earlier.
-                if scim and not scim.get("email"):
-                    gh_info = fetch_github_user_info(login)
-                    if gh_info.get("email"):
-                        scim = {
-                            "name": scim.get("name") or gh_info.get("name", ""),
-                            "email": gh_info["email"],
-                        }
+            # If scim has a name but no email – either because:
+            #   a) no SCIM match and the seat/GitHub-API fallback returned a name only, or
+            #   b) the SCIM email was cleared above because it didn't match the login –
+            # try the GitHub users API one more time to fill the gap.
+            # Results are cached in _gh_user_cache, so repeated calls are free.
+            if scim and not scim.get("email"):
+                gh_info = fetch_github_user_info(login)
+                if gh_info.get("email"):
+                    scim = {
+                        "name": scim.get("name") or gh_info.get("name", ""),
+                        "email": gh_info["email"],
+                    }
 
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
 
