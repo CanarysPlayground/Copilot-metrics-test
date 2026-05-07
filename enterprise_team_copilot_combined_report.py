@@ -1943,25 +1943,27 @@ def main():
 
             if not scim:
                 no_scim_match += 1
-                # For EMU accounts with Azure Entra IDP, we ONLY use SCIM emails
-                # to ensure uniqueness. The SCIM userName is the authoritative
-                # identifier and SCIM emails are always unique per user.
-                # We do NOT fall back to GitHub profile emails or seat assignee
-                # emails as they may not be unique or correctly mapped.
+                # When SCIM lookup fails, fall back to GitHub Profile for both
+                # display name and email. This applies to non-EMU enterprises
+                # or EMU users that were not found in SCIM sync.
                 #
-                # If SCIM lookup failed, we only fetch the display name from
-                # GitHub for informational purposes, but leave email empty.
+                # Priority for display name:
+                #   1. Seat assignee name (if available)
+                #   2. GitHub Profile name
+                #
+                # Email is always fetched from GitHub Profile when available.
                 seat_assignee = seat.get("assignee") if seat else None
                 seat_assignee = seat_assignee if isinstance(seat_assignee, dict) else {}
                 seat_name = str(seat_assignee.get("name") or "").strip()
 
-                if seat_name:
-                    scim = {"name": seat_name, "email": ""}
-                else:
-                    # Fetch only the display name from GitHub users API.
-                    # Email is intentionally NOT used from this source.
-                    gh_info = fetch_github_user_info(login)
-                    scim = {"name": gh_info.get("name", ""), "email": ""}
+                # Always fetch GitHub user info for email (and name if seat_name is empty)
+                gh_info = fetch_github_user_info(login)
+                gh_name = gh_info.get("name", "")
+                gh_email = gh_info.get("email", "")
+
+                # Use seat_name if available, otherwise use GitHub Profile name
+                user_display_name = seat_name if seat_name else gh_name
+                scim = {"name": user_display_name, "email": gh_email}
 
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
 
