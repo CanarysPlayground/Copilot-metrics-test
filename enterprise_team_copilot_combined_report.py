@@ -317,11 +317,18 @@ def generate_login_candidates_from_email(email: str) -> Set[str]:
 def build_scim_index(scim_users):
     """Build a lookup index from SCIM users.
     
-    The index maps multiple lookup keys (email local parts, userName variations, etc.)
-    to SCIM user records. To handle cases where different users generate the same derived
-    key (e.g., "atishayjain@..." and "atishay-jain@..." both produce "atishayjain" after
-    removing hyphens), each key maps to a LIST of candidate records. The `scim_lookup`
-    function will then select the best match based on exact-match priority.
+    The index maps multiple lookup keys (email local parts, userName variations,
+    externalId, etc.) to SCIM user records. To handle cases where different users
+    generate the same derived key (e.g., "atishayjain@..." and "atishay-jain@..."
+    both produce "atishayjain" after removing hyphens), each key maps to a LIST of
+    candidate records. The `scim_lookup` function will then select the best match
+    based on exact-match priority.
+    
+    For EMU enterprises with Azure EntraID:
+    - externalId is typically the GitHub login (e.g., "akash-goel_newgen")
+    - userName is typically the user's email (e.g., "akash.goel@newgensoft.com")
+    
+    The externalId is the MOST RELIABLE key for EMU lookups and is given priority.
     """
     idx: Dict[str, List[Dict[str, str]]] = {}
     for u in scim_users:
@@ -331,10 +338,24 @@ def build_scim_index(scim_users):
         name = pick_scim_name(u)
         email = pick_scim_email(u)
         scim_user_name = str(u.get("userName") or "").strip()
+        # externalId is the GitHub login for EMU users provisioned via Azure EntraID
+        external_id = str(u.get("externalId") or "").strip()
 
-        user_record = {"name": name, "email": email, "scim_userName": scim_user_name}
+        user_record = {
+            "name": name,
+            "email": email,
+            "scim_userName": scim_user_name,
+            "externalId": external_id,
+        }
 
         keys: Set[str] = set()
+
+        # PRIORITY 1: externalId (GitHub login) - most reliable for EMU
+        if external_id:
+            keys.add(external_id.lower())
+            # Also add the base without enterprise suffix (e.g., "akash-goel" from "akash-goel_newgen")
+            if "_" in external_id:
+                keys.add(external_id.split("_", 1)[0].lower())
 
         if email:
             keys.add(email.lower())
@@ -362,25 +383,40 @@ def build_scim_index(scim_users):
 def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dict[str, str]:
     """Select the best SCIM record from a list of candidates for a given GitHub login.
     
-    Priority order:
-    0. Exact match on scim_userName (full login or base without enterprise suffix)
-    1. Exact match on email local part (before @), including dot/hyphen/underscore normalization
-    2. Exact match on scim_userName local part (when userName is an email)
-    3. Return empty dict when multiple candidates exist but none match confidently
+    Priority order (for EMU with Azure EntraID):
+    0. Exact match on externalId (THE MOST RELIABLE - this IS the GitHub login)
+    1. Exact match on scim_userName (full login or base without enterprise suffix)
+    2. Exact match on email local part (before @), with strict character-level comparison
+    3. Exact match on scim_userName local part (when userName is an email)
+    4. Return empty dict when no candidate matches confidently
        (prevents assigning wrong email to users with similar names)
     
-    When only a single candidate exists, it is returned directly.
+    IMPORTANT: Even when only a single candidate exists, we MUST validate it matches
+    the login. Otherwise users like "akash-goel2_newgen" would incorrectly get the
+    email for "akash-goel_newgen" because both logins share a common prefix.
     """
     if not candidates:
         return {}
-    if len(candidates) == 1:
-        return candidates[0]
     
     login_lower = login.lower().strip()
-    # Remove enterprise suffix if present (e.g., "atishayjain_newgen" -> "atishayjain")
+    # Remove enterprise suffix if present (e.g., "akash-goel_newgen" -> "akash-goel")
     login_base = login_lower.split("_", 1)[0] if "_" in login_lower else login_lower
     
-    # Priority 0: Exact match on scim_userName (the most reliable identifier)
+    # Priority 0: Exact match on externalId (THE MOST RELIABLE for EMU)
+    # externalId is the GitHub login set by the IdP (Azure EntraID)
+    for c in candidates:
+        external_id = (c.get("externalId") or "").lower().strip()
+        if external_id == login_lower:
+            return c
+        # Also check base without enterprise suffix
+        if external_id == login_base:
+            return c
+        # externalId might not include enterprise suffix
+        external_id_base = external_id.split("_", 1)[0] if "_" in external_id else external_id
+        if external_id_base == login_base and external_id_base:
+            return c
+    
+    # Priority 1: Exact match on scim_userName
     for c in candidates:
         scim_user_name = (c.get("scim_userName") or "").lower().strip()
         if scim_user_name == login_lower:
@@ -389,22 +425,26 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
         if scim_user_name == login_base:
             return c
     
-    # Priority 1: Exact match on email local part
+    # Priority 2: Exact match on email local part
+    # We use STRICT matching: the email local part must exactly equal the login_base
+    # OR when normalized (dots/underscores → hyphens), both must be IDENTICAL in length
+    # and content. This prevents "akash.goel" from matching "akash-goel2".
     for c in candidates:
         email = (c.get("email") or "").lower()
         if "@" in email:
             email_local = email.split("@", 1)[0]
-            # Check both the full login and the base (without suffix)
+            # Exact match on email local part
             if email_local == login_lower or email_local == login_base:
                 return c
-            # Normalize: replace dots and underscores with hyphens for comparison
-            # but ONLY if the lengths match after normalization (avoids partial matches)
+            # Normalize both sides: replace dots and underscores with hyphens
             email_local_normalized = email_local.replace(".", "-").replace("_", "-")
             login_base_normalized = login_base.replace(".", "-").replace("_", "-")
+            # STRICT: normalized forms must be exactly equal (same length and content)
+            # This prevents "akash-goel" (from "akash.goel") matching "akash-goel2"
             if email_local_normalized == login_base_normalized:
                 return c
     
-    # Priority 2: Exact match on scim_userName local part (when userName is an email)
+    # Priority 3: Exact match on scim_userName local part (when userName is an email)
     for c in candidates:
         scim_user_name = (c.get("scim_userName") or "").lower()
         if "@" in scim_user_name:
@@ -416,9 +456,9 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
             if scim_local_normalized == login_base_normalized:
                 return c
     
-    # No confident match found among multiple candidates.
-    # Return empty to allow the caller to fall back to direct SCIM API lookup
-    # rather than returning a potentially incorrect email.
+    # No confident match found - return empty to trigger direct SCIM API lookup.
+    # This is CRITICAL: even with a single candidate, we must NOT return it if
+    # it doesn't match, as it could be the wrong user's email.
     return {}
 
 
@@ -427,35 +467,59 @@ def fetch_scim_user_by_username(login: str) -> Dict[str, str]:
 
     Uses the endpoint: GET /scim/v2/enterprises/{enterprise}/Users?filter=userName eq "{login}"
     This provides an exact match and avoids collisions from fuzzy index lookups.
-    Returns a dict with 'name' and 'email' keys, or empty dict if not found.
+    
+    For EMU enterprises with Azure EntraID, the SCIM userName is typically the user's
+    email address (e.g., "akash.goel@newgensoft.com"), NOT the GitHub login
+    (e.g., "akash-goel_newgen"). This function tries multiple filter strategies:
+    
+    1. Filter by externalId matching the GitHub login (most reliable for EMU)
+    2. Filter by userName matching the GitHub login (works if userName == login)
+    
+    Returns a dict with 'name', 'email', and 'scim_userName' keys, or empty dict if not found.
     """
     if not login:
         return {}
+    
     url = f"{API_BASE}/scim/v2/enterprises/{ENTERPRISE_SLUG}/Users"
-    filter_str = f'userName eq "{login}"'
-    resp = gh_get(url, headers=HEADERS_SCIM, params={"filter": filter_str, "count": 1})
-
-    if resp.status_code in (401, 403, 404, 501):
-        return {}
-
-    try:
-        resp.raise_for_status()
-    except requests.exceptions.RequestException:
-        return {}
-
-    payload = resp.json() or {}
-    resources = payload.get("Resources") or []
-    if not resources:
-        return {}
-
-    u = resources[0]
-    if not isinstance(u, dict):
-        return {}
-
-    name = pick_scim_name(u)
-    email = pick_scim_email(u)
-    scim_user_name = str(u.get("userName") or "").strip()
-    return {"name": name, "email": email, "scim_userName": scim_user_name}
+    
+    def _try_filter(filter_str: str) -> Optional[Dict[str, str]]:
+        """Try a SCIM filter and return the matched user record or None."""
+        resp = gh_get(url, headers=HEADERS_SCIM, params={"filter": filter_str, "count": 1})
+        
+        if resp.status_code in (401, 403, 404, 501):
+            return None
+        
+        try:
+            resp.raise_for_status()
+        except requests.exceptions.RequestException:
+            return None
+        
+        payload = resp.json() or {}
+        resources = payload.get("Resources") or []
+        if not resources:
+            return None
+        
+        u = resources[0]
+        if not isinstance(u, dict):
+            return None
+        
+        name = pick_scim_name(u)
+        email = pick_scim_email(u)
+        scim_user_name = str(u.get("userName") or "").strip()
+        return {"name": name, "email": email, "scim_userName": scim_user_name}
+    
+    # Strategy 1: Filter by externalId (most reliable for EMU with Azure EntraID)
+    # The externalId is typically the GitHub login set by the IdP.
+    result = _try_filter(f'externalId eq "{login}"')
+    if result:
+        return result
+    
+    # Strategy 2: Filter by userName (works if userName equals the GitHub login)
+    result = _try_filter(f'userName eq "{login}"')
+    if result:
+        return result
+    
+    return {}
 
 
 # Cache for individual SCIM lookups to avoid repeated API calls
