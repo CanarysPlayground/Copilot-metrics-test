@@ -1943,33 +1943,25 @@ def main():
 
             if not scim:
                 no_scim_match += 1
-                # Prefer name/email already present in the Copilot billing seat's
-                # assignee object (it is fetched in bulk and contains the user's
-                # GitHub profile name and public email).  This avoids one extra
-                # per-user API call for every seat holder.
+                # For EMU accounts with Azure Entra IDP, we ONLY use SCIM emails
+                # to ensure uniqueness. The SCIM userName is the authoritative
+                # identifier and SCIM emails are always unique per user.
+                # We do NOT fall back to GitHub profile emails or seat assignee
+                # emails as they may not be unique or correctly mapped.
+                #
+                # If SCIM lookup failed, we only fetch the display name from
+                # GitHub for informational purposes, but leave email empty.
                 seat_assignee = seat.get("assignee") if seat else None
                 seat_assignee = seat_assignee if isinstance(seat_assignee, dict) else {}
                 seat_name = str(seat_assignee.get("name") or "").strip()
-                seat_email = str(seat_assignee.get("email") or "").strip()
 
-                if seat_name or seat_email:
-                    scim = {"name": seat_name, "email": seat_email}
+                if seat_name:
+                    scim = {"name": seat_name, "email": ""}
                 else:
-                    # No inline data available – fall back to GitHub users API.
-                    # This covers non-EMU enterprises where the user has no seat,
-                    # and EMU enterprises with an incomplete SCIM sync.
-                    scim = fetch_github_user_info(login)
-
-                # If the seat assignee had a name but no email, try the GitHub
-                # users API to fill the gap.  Results are cached in _gh_user_cache,
-                # so this call is free if we already fetched this user earlier.
-                if scim and not scim.get("email"):
+                    # Fetch only the display name from GitHub users API.
+                    # Email is intentionally NOT used from this source.
                     gh_info = fetch_github_user_info(login)
-                    if gh_info.get("email"):
-                        scim = {
-                            "name": scim.get("name") or gh_info.get("name", ""),
-                            "email": gh_info["email"],
-                        }
+                    scim = {"name": gh_info.get("name", ""), "email": ""}
 
             agg = metrics_by_login.get(login) or metrics_by_login.get(login.lower())
 
