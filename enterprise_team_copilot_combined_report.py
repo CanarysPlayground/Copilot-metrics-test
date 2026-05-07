@@ -351,15 +351,11 @@ def build_scim_index(scim_users):
         keys: Set[str] = set()
 
         # PRIORITY 1: externalId (GitHub login) - most reliable for EMU
-        # NOTE: We add the base without suffix as a lookup key for performance (avoids
-        # direct API calls for common lookups). When multiple users share a base key
-        # (e.g., "akash-goel_newgen" and "akash-goel_other" both produce "akash-goel"),
-        # the index will contain multiple candidates, and `_select_best_scim_match`
-        # validates EVERY candidate against the actual login before returning.
+        # externalId is an exact identifier, so we ONLY add the full value as a key.
+        # Unlike email-based keys, we do NOT add a base without suffix because externalId
+        # should match exactly to avoid false matches between similar logins.
         if external_id:
             keys.add(external_id.lower())
-            if "_" in external_id:
-                keys.add(external_id.split("_", 1)[0].lower())
 
         if email:
             keys.add(email.lower())
@@ -407,13 +403,11 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
     login_base = login_lower.split("_", 1)[0] if "_" in login_lower else login_lower
     
     # Priority 0: Exact match on externalId (THE MOST RELIABLE for EMU)
-    # externalId is the GitHub login set by the IdP (Azure EntraID)
+    # externalId is the GitHub login set by the IdP (Azure EntraID).
+    # We ONLY match on the exact externalId value to prevent false matches.
     for c in candidates:
         external_id = (c.get("externalId") or "").lower().strip()
         if external_id == login_lower:
-            return c
-        # Also check base without enterprise suffix (e.g., "akash-goel" from "akash-goel_newgen")
-        if external_id == login_base:
             return c
     
     # Priority 1: Exact match on scim_userName
