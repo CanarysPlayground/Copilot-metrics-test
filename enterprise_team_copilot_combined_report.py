@@ -351,9 +351,13 @@ def build_scim_index(scim_users):
         keys: Set[str] = set()
 
         # PRIORITY 1: externalId (GitHub login) - most reliable for EMU
+        # NOTE: We add the base without suffix as a lookup key for performance (avoids
+        # direct API calls for common lookups). When multiple users share a base key
+        # (e.g., "akash-goel_newgen" and "akash-goel_other" both produce "akash-goel"),
+        # the index will contain multiple candidates, and `_select_best_scim_match`
+        # validates EVERY candidate against the actual login before returning.
         if external_id:
             keys.add(external_id.lower())
-            # Also add the base without enterprise suffix (e.g., "akash-goel" from "akash-goel_newgen")
             if "_" in external_id:
                 keys.add(external_id.split("_", 1)[0].lower())
 
@@ -408,12 +412,8 @@ def _select_best_scim_match(candidates: List[Dict[str, str]], login: str) -> Dic
         external_id = (c.get("externalId") or "").lower().strip()
         if external_id == login_lower:
             return c
-        # Also check base without enterprise suffix
+        # Also check base without enterprise suffix (e.g., "akash-goel" from "akash-goel_newgen")
         if external_id == login_base:
-            return c
-        # externalId might not include enterprise suffix
-        external_id_base = external_id.split("_", 1)[0] if "_" in external_id else external_id
-        if external_id_base == login_base and external_id_base:
             return c
     
     # Priority 1: Exact match on scim_userName
@@ -506,7 +506,8 @@ def fetch_scim_user_by_username(login: str) -> Dict[str, str]:
         name = pick_scim_name(u)
         email = pick_scim_email(u)
         scim_user_name = str(u.get("userName") or "").strip()
-        return {"name": name, "email": email, "scim_userName": scim_user_name}
+        external_id = str(u.get("externalId") or "").strip()
+        return {"name": name, "email": email, "scim_userName": scim_user_name, "externalId": external_id}
     
     # Strategy 1: Filter by externalId (most reliable for EMU with Azure EntraID)
     # The externalId is typically the GitHub login set by the IdP.
