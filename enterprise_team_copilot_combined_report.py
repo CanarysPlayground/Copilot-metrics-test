@@ -2099,8 +2099,8 @@ def main():
                 group_display_name = team_names_in_group[0]
 
             group_csv = f"enterprise_team_{combined_slug_part}_copilot_{date_str}.csv"
-            with open(group_csv, "w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=fieldnames)
+            with open(group_csv, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
                 w.writeheader()
                 w.writerows(group_rows)
 
@@ -2131,8 +2131,8 @@ def main():
 
     elif not ENTERPRISE_TEAM_SLUGS:
         # Original behaviour: single combined CSV.
-        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
+        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
             w.writeheader()
             w.writerows(combined_rows)
         print(f"CSV report generated: {OUTPUT_CSV}")
