@@ -1530,8 +1530,6 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
             "metrics_cli_loc_suggested_28d": 0,
             "metrics_cli_loc_added_28d": 0,
             "metrics_cli_acceptance_pct_28d": 0,
-            "metrics_editors_used_28d": "",
-            "metrics_top_editor_28d": "",
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
@@ -1614,9 +1612,6 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
             (agg.editor_acceptances.get("cli", 0.0) / agg.editor_completions.get("cli", 0.0) * 100.0)
             if agg.editor_completions.get("cli", 0.0) > 0 else 0.0, 2
         ),
-        # Editor breakdown showing usage across all tools (CLI, VSCode, JetBrains, etc.)
-        "metrics_editors_used_28d": ", ".join(sorted(agg.editor_counts.keys())) if agg.editor_counts else "",
-        "metrics_top_editor_28d": top_key(agg.editor_interactions),
     }
 
 # -------------------------
@@ -1805,12 +1800,6 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_cli_loc_suggested_28d    Lines of code suggested via CLI\n"
         f"  metrics_cli_loc_added_28d        Lines of code accepted/applied via CLI\n"
         f"  metrics_cli_acceptance_pct_28d   CLI acceptance rate: (acceptances/completions)×100\n"
-        f"\n"
-        f"  EDITOR BREAKDOWN COLUMNS:\n"
-        f"  metrics_editors_used_28d         Comma-separated list of all editors/tools used\n"
-        f"                                   (e.g., 'cli, vscode, jetbrains')\n"
-        f"  metrics_top_editor_28d           Editor with the highest interaction count\n"
-        f"                                   Shows which tool the user prefers (cli, vscode, etc.)\n"
         f"\n"
         f"  IMPORTANT NOTES:\n"
         f"  - CLI metrics are ONLY available if users actually use GitHub Copilot via CLI\n"
@@ -2071,9 +2060,6 @@ def main():
         "metrics_cli_loc_suggested_28d",
         "metrics_cli_loc_added_28d",
         "metrics_cli_acceptance_pct_28d",
-        # Editor/IDE breakdown
-        "metrics_editors_used_28d",
-        "metrics_top_editor_28d",
         # billing (calendar month)
         "billing_period",
         "premium_requests_complete_month",
