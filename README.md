@@ -779,10 +779,10 @@ The script handles multiple API response formats:
 
 1. **CLI metrics are additive** — they're a subset of your total Copilot usage, not separate
 2. **Editor field is case-insensitive** — `"CLI"`, `"cli"`, `"Cli"` all count as CLI
-3. **CLI variations supported** — `"gh-cli"`, `"copilot_cli"`, and any editor value containing `"cli"` is recognized
+3. **CLI variations supported** — `"gh-cli"`, `"copilot_cli"`, and any editor value with CLI delimiters is recognized
 4. **Multiple editors per user** — users can appear in both CLI and IDE metrics if they use both
 5. **Data retention** — only 28-day rolling window is available
-5. **API rate limits** — the script respects GitHub API rate limits with automatic retries
+6. **API rate limits** — the script respects GitHub API rate limits with automatic retries
 
 ---
 
