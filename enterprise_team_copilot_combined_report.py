@@ -1090,6 +1090,27 @@ def should_use_interaction_fallback(has_top_level_interactions: bool, top_level_
     """Return True when detailed interaction counts should replace the top-level value."""
     return not has_top_level_interactions or top_level_interactions <= 0
 
+def normalize_editor_name(editor_value: str) -> str:
+    """Normalize editor name for consistent tracking, especially CLI variations.
+    
+    GitHub's Copilot Metrics API can return various values for CLI usage:
+    - "cli" - standard CLI value
+    - "gh-cli" - GitHub CLI
+    - "copilot_cli" - Copilot CLI section name
+    - "gh_cli", "github-cli", etc. - other variations
+    
+    This function normalizes all CLI-related values to "cli" for consistent reporting.
+    Other editor values (vscode, jetbrains, neovim, etc.) pass through unchanged.
+    """
+    normalized = editor_value.lower().strip()
+    
+    # Match any editor value containing "cli" (gh-cli, copilot_cli, gh_cli, etc.)
+    # This ensures all CLI variations are tracked together
+    if "cli" in normalized:
+        return "cli"
+    
+    return normalized
+
 @dataclass
 class UserAgg:
     user: str
@@ -1348,7 +1369,9 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 if not isinstance(e, dict):
                     continue
                 # Normalize editor name (cli, vscode, jetbrains, neovim, etc.)
-                editor = (e.get("editor") or e.get("client") or e.get("ide") or "unknown").lower().strip()
+                # Use normalize_editor_name to handle CLI variations (gh-cli, copilot_cli, etc.)
+                editor_raw = e.get("editor") or e.get("client") or e.get("ide") or "unknown"
+                editor = normalize_editor_name(editor_raw)
                 if not editor or editor == "unknown":
                     continue
                 
@@ -1372,9 +1395,10 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
                 agg.editor_counts[editor] = agg.editor_counts.get(editor, 0.0) + 1.0
         else:
             # Flat NDJSON format: editor is a top-level field per row
-            editor = r.get("editor") or r.get("client") or r.get("ide")
-            if isinstance(editor, str) and editor:
-                editor = editor.lower().strip()
+            editor_raw = r.get("editor") or r.get("client") or r.get("ide")
+            if isinstance(editor_raw, str) and editor_raw:
+                # Use normalize_editor_name to handle CLI variations (gh-cli, copilot_cli, etc.)
+                editor = normalize_editor_name(editor_raw)
                 if editor and editor != "unknown":
                     # Aggregate this row's metrics to the editor
                     _, editor_interaction_count = get_first_present_field(r, _INTERACTION_COUNT_FIELDS)
