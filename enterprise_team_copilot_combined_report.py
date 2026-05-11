@@ -1123,6 +1123,15 @@ class UserAgg:
     feature_loc_added: Dict[str, float] = field(default_factory=dict)
     feature_loc_deleted: Dict[str, float] = field(default_factory=dict)
 
+    # Editor/IDE tracking (includes CLI, VSCode, JetBrains, Neovim, etc.)
+    # Tracks interactions by editor to identify CLI-specific usage
+    editor_counts: Dict[str, float] = field(default_factory=dict)
+    editor_interactions: Dict[str, float] = field(default_factory=dict)
+    editor_completions: Dict[str, float] = field(default_factory=dict)
+    editor_acceptances: Dict[str, float] = field(default_factory=dict)
+    editor_loc_suggested: Dict[str, float] = field(default_factory=dict)
+    editor_loc_added: Dict[str, float] = field(default_factory=dict)
+
 def get_user_login_from_row(row: Dict[str, Any]) -> str:
     v = row.get("user_login")
     if isinstance(v, str) and v:
@@ -1319,6 +1328,70 @@ def aggregate_users(rows: List[Dict[str, Any]]) -> Dict[str, UserAgg]:
             agg.loc_added += loc_added_val
             agg.loc_deleted += loc_deleted_val
 
+        # -------------------------
+        # Editor/IDE tracking (including CLI)
+        # -------------------------
+        # The GitHub Copilot Metrics API includes an "editor" field that identifies
+        # which tool was used (e.g., "vscode", "cli", "jetbrains", "neovim", etc.).
+        # This enables tracking CLI-specific metrics separately from IDE usage.
+        #
+        # The editor field can appear in different formats:
+        # 1. Nested format: within totals_by_editor array
+        # 2. Flat NDJSON format: top-level "editor" field per row
+        # 3. Some API versions may use "client" or "ide" as alternative field names
+        #
+        # We extract and aggregate metrics by editor to enable CLI-specific reporting.
+        tbe = r.get("totals_by_editor")
+        if isinstance(tbe, list):
+            # Nested format: Array of editor-specific metrics
+            for e in tbe:
+                if not isinstance(e, dict):
+                    continue
+                # Normalize editor name (cli, vscode, jetbrains, neovim, etc.)
+                editor = (e.get("editor") or e.get("client") or e.get("ide") or "unknown").lower().strip()
+                if not editor or editor == "unknown":
+                    continue
+                
+                # Track interaction count by editor
+                _, editor_interaction_count = get_first_present_field(e, _INTERACTION_COUNT_FIELDS)
+                agg.editor_interactions[editor] = agg.editor_interactions.get(editor, 0.0) + editor_interaction_count
+                
+                # Track completions and acceptances by editor
+                completions_val = to_num(e.get("code_generation_activity_count"))
+                acceptances_val = to_num(e.get("code_acceptance_activity_count"))
+                agg.editor_completions[editor] = agg.editor_completions.get(editor, 0.0) + completions_val
+                agg.editor_acceptances[editor] = agg.editor_acceptances.get(editor, 0.0) + acceptances_val
+                
+                # Track LOC by editor
+                editor_loc_sug = get_loc_field_value(e, "loc_suggested_to_add_sum", "loc_suggested")
+                editor_loc_add = get_loc_field_value(e, "loc_added_sum", "loc_added")
+                agg.editor_loc_suggested[editor] = agg.editor_loc_suggested.get(editor, 0.0) + editor_loc_sug
+                agg.editor_loc_added[editor] = agg.editor_loc_added.get(editor, 0.0) + editor_loc_add
+                
+                # Increment total count for this editor (tracks days/sessions)
+                agg.editor_counts[editor] = agg.editor_counts.get(editor, 0.0) + 1.0
+        else:
+            # Flat NDJSON format: editor is a top-level field per row
+            editor = r.get("editor") or r.get("client") or r.get("ide")
+            if isinstance(editor, str) and editor:
+                editor = editor.lower().strip()
+                if editor and editor != "unknown":
+                    # Aggregate this row's metrics to the editor
+                    _, editor_interaction_count = get_first_present_field(r, _INTERACTION_COUNT_FIELDS)
+                    agg.editor_interactions[editor] = agg.editor_interactions.get(editor, 0.0) + editor_interaction_count
+                    
+                    completions_val = to_num(r.get("code_generation_activity_count"))
+                    acceptances_val = to_num(r.get("code_acceptance_activity_count"))
+                    agg.editor_completions[editor] = agg.editor_completions.get(editor, 0.0) + completions_val
+                    agg.editor_acceptances[editor] = agg.editor_acceptances.get(editor, 0.0) + acceptances_val
+                    
+                    editor_loc_sug = get_loc_field_value(r, "loc_suggested_to_add_sum", "loc_suggested")
+                    editor_loc_add = get_loc_field_value(r, "loc_added_sum", "loc_added")
+                    agg.editor_loc_suggested[editor] = agg.editor_loc_suggested.get(editor, 0.0) + editor_loc_sug
+                    agg.editor_loc_added[editor] = agg.editor_loc_added.get(editor, 0.0) + editor_loc_add
+                    
+                    agg.editor_counts[editor] = agg.editor_counts.get(editor, 0.0) + 1.0
+
         if use_interaction_fallback:
             fallback_interactions = 0.0
             # Prefer feature totals because they are the report's most specific
@@ -1422,6 +1495,14 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
             "metrics_loc_added_by_language_inline_28d": "",
             "metrics_loc_suggested_by_language_agent_28d": "",
             "metrics_loc_added_by_language_agent_28d": "",
+            "metrics_cli_interactions_28d": 0,
+            "metrics_cli_completions_28d": 0,
+            "metrics_cli_acceptances_28d": 0,
+            "metrics_cli_loc_suggested_28d": 0,
+            "metrics_cli_loc_added_28d": 0,
+            "metrics_cli_acceptance_pct_28d": 0,
+            "metrics_editors_used_28d": "",
+            "metrics_top_editor_28d": "",
         }
 
     acceptance_pct = (agg.acceptances / agg.completions * 100.0) if agg.completions > 0 else 0.0
@@ -1493,6 +1574,20 @@ def metrics_row_for_user(agg: Optional["UserAgg"]) -> dict:
         "metrics_loc_added_by_language_inline_28d": format_language_loc(agg.language_loc_added_inline),
         "metrics_loc_suggested_by_language_agent_28d": format_language_loc(agg.language_loc_suggested_agent),
         "metrics_loc_added_by_language_agent_28d": format_language_loc(agg.language_loc_added_agent),
+        # CLI-specific metrics extracted from the editor field in the API response
+        # These columns track Copilot usage specifically through the GitHub CLI tool
+        "metrics_cli_interactions_28d": int(agg.editor_interactions.get("cli", 0.0)),
+        "metrics_cli_completions_28d": int(agg.editor_completions.get("cli", 0.0)),
+        "metrics_cli_acceptances_28d": int(agg.editor_acceptances.get("cli", 0.0)),
+        "metrics_cli_loc_suggested_28d": int(agg.editor_loc_suggested.get("cli", 0.0)),
+        "metrics_cli_loc_added_28d": int(agg.editor_loc_added.get("cli", 0.0)),
+        "metrics_cli_acceptance_pct_28d": round(
+            (agg.editor_acceptances.get("cli", 0.0) / agg.editor_completions.get("cli", 0.0) * 100.0)
+            if agg.editor_completions.get("cli", 0.0) > 0 else 0.0, 2
+        ),
+        # Editor breakdown showing usage across all tools (CLI, VSCode, JetBrains, etc.)
+        "metrics_editors_used_28d": ", ".join(sorted(agg.editor_counts.keys())) if agg.editor_counts else "",
+        "metrics_top_editor_28d": top_key(agg.editor_interactions),
     }
 
 # -------------------------
@@ -1644,6 +1739,56 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  metrics_loc_suggested_by_language_agent_28d  LOC proposed per language: agent (chat_panel_agent_mode+chat_panel_plan_mode) only\n"
         f"                                               (agent_edit is excluded — direct file writes always return 0 for loc_suggested_to_add_sum)\n"
         f"  metrics_loc_added_by_language_agent_28d      LOC applied per language: agent (chat_panel_agent_mode+chat_panel_plan_mode+agent_edit) only\n"
+        f"\n"
+        f"CLI-Specific Metrics (rolling 28-day window)\n"
+        f"  The GitHub Copilot Metrics API includes an 'editor' field that identifies which\n"
+        f"  tool was used for each interaction (e.g., 'cli', 'vscode', 'jetbrains', 'neovim').\n"
+        f"  These columns extract and aggregate metrics specifically for CLI usage.\n"
+        f"\n"
+        f"  HOW CLI METRICS ARE CALCULATED:\n"
+        f"  The script fetches metrics from the GitHub Copilot API endpoint:\n"
+        f"    GET /enterprises/{{enterprise}}/copilot/metrics/reports/users-28-day/latest\n"
+        f"\n"
+        f"  This endpoint returns download_links to NDJSON files containing user metrics.\n"
+        f"  Each NDJSON file contains rows with:\n"
+        f"    - user_login: The GitHub username\n"
+        f"    - editor: Which tool was used (cli, vscode, jetbrains, neovim, etc.)\n"
+        f"    - totals_by_editor: Array of editor-specific metrics including:\n"
+        f"      * user_initiated_interaction_count: Number of prompts/interactions\n"
+        f"      * code_generation_activity_count: Completions shown\n"
+        f"      * code_acceptance_activity_count: Completions accepted\n"
+        f"      * loc_suggested_to_add_sum: Lines of code suggested\n"
+        f"      * loc_added_sum: Lines of code accepted/applied\n"
+        f"\n"
+        f"  The script downloads all NDJSON files, parses each row, and aggregates metrics\n"
+        f"  by editor. For CLI metrics, we filter rows where editor='cli' and sum the values.\n"
+        f"\n"
+        f"  DATA FRESHNESS:\n"
+        f"  - The 28-day rolling window is updated daily by GitHub\n"
+        f"  - Data typically has a 1-2 hour lag from actual usage\n"
+        f"  - The report includes all CLI interactions from the past 28 days\n"
+        f"\n"
+        f"  CLI-SPECIFIC COLUMNS:\n"
+        f"  metrics_cli_interactions_28d     Number of CLI prompts/interactions in the last 28 days\n"
+        f"                                   (excludes IDE/editor interactions)\n"
+        f"  metrics_cli_completions_28d      Number of code completions shown via CLI\n"
+        f"  metrics_cli_acceptances_28d      Number of CLI completions accepted by the user\n"
+        f"  metrics_cli_loc_suggested_28d    Lines of code suggested via CLI\n"
+        f"  metrics_cli_loc_added_28d        Lines of code accepted/applied via CLI\n"
+        f"  metrics_cli_acceptance_pct_28d   CLI acceptance rate: (acceptances/completions)×100\n"
+        f"\n"
+        f"  EDITOR BREAKDOWN COLUMNS:\n"
+        f"  metrics_editors_used_28d         Comma-separated list of all editors/tools used\n"
+        f"                                   (e.g., 'cli, vscode, jetbrains')\n"
+        f"  metrics_top_editor_28d           Editor with the highest interaction count\n"
+        f"                                   Shows which tool the user prefers (cli, vscode, etc.)\n"
+        f"\n"
+        f"  IMPORTANT NOTES:\n"
+        f"  - CLI metrics are ONLY available if users actually use GitHub Copilot via CLI\n"
+        f"  - If a user has never used the CLI, all CLI columns will show 0\n"
+        f"  - The 'editor' field is case-insensitive ('CLI', 'cli', 'Cli' all count as CLI)\n"
+        f"  - Some older API versions may not include the editor field; in that case CLI\n"
+        f"    metrics will be 0 for all users\n"
         f"\n"
         f"─────────────────────────────────────────\n"
         f"WHY loc_suggested CAN BE LESS THAN loc_added\n"
@@ -1890,6 +2035,16 @@ def main():
         "metrics_loc_added_edit_28d",
         "metrics_loc_suggested_agent_28d",
         "metrics_loc_added_agent_28d",
+        # CLI-specific metrics (28d rolling window)
+        "metrics_cli_interactions_28d",
+        "metrics_cli_completions_28d",
+        "metrics_cli_acceptances_28d",
+        "metrics_cli_loc_suggested_28d",
+        "metrics_cli_loc_added_28d",
+        "metrics_cli_acceptance_pct_28d",
+        # Editor/IDE breakdown
+        "metrics_editors_used_28d",
+        "metrics_top_editor_28d",
         # billing (calendar month)
         "billing_period",
         "premium_requests_complete_month",
