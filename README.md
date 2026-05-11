@@ -29,6 +29,7 @@
   - [Calculating Acceptance Rates](#calculating-acceptance-rates)
   - [Per-Language Breakdown](#per-language-breakdown)
   - [Premium Request Tracking](#premium-request-tracking)
+  - [CLI Metrics](#cli-metrics)
 - [Email Delivery](#email-delivery)
 - [SCIM and User Information](#scim-and-user-information)
 - [Troubleshooting](#troubleshooting)
@@ -53,6 +54,8 @@ The **Enterprise Team Copilot Metrics Report** is a Python-based tool that gener
 
 ✅ **Comprehensive Metrics Tracking**
 - User-level Copilot activity across all features (inline, chat, edit, agent)
+- **CLI-specific metrics extraction** (interactions, completions, acceptances via GitHub CLI)
+- Editor/IDE breakdown (CLI, VSCode, JetBrains, Neovim, etc.)
 - Lines of code suggested, accepted, and deleted
 - Acceptance rates and engagement metrics
 - Premium model usage tracking
@@ -639,6 +642,145 @@ The report tries three sources in order for each activity row, stopping at the f
 3. **Model-based estimation (fallback)** — when neither explicit field is present, the report counts every interaction with a non-included model as one premium request. This is the primary path for current API responses.
 
 > **Important caveat:** The estimation in step 3 counts *interactions*, not *billed request units*. Some premium models carry a multiplier greater than 1× (e.g., a single interaction may cost 10 premium requests). Because the GitHub API does not currently expose per-model multipliers in the usage feed, the internal model-based estimate may **undercount** the actual number of billed premium request units for users who heavily use high-multiplier models. The `premium_requests_complete_month` column uses billing API data and therefore reflects the true billed count for the complete calendar month.
+
+### CLI Metrics
+
+GitHub Copilot can be used through multiple tools: IDEs (VSCode, JetBrains, Neovim) and the **GitHub CLI**. The report now extracts and tracks CLI-specific metrics to help you understand how developers are using Copilot through the command line interface.
+
+#### What are CLI metrics?
+
+CLI metrics measure GitHub Copilot usage specifically through the GitHub CLI tool (`gh copilot`). These metrics are tracked separately from IDE usage to provide visibility into:
+- Developers using Copilot in terminal environments
+- Teams adopting CLI workflows
+- Command-line assistance patterns
+- CLI vs IDE adoption trends
+
+#### How are CLI metrics calculated and fetched?
+
+The script fetches data from the **GitHub Copilot Metrics API** using this endpoint:
+
+```
+GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest
+```
+
+**Step-by-step process:**
+
+1. **API Request**: The script calls the metrics endpoint with your enterprise slug
+2. **Download Links**: The API returns `download_links` — URLs to NDJSON (newline-delimited JSON) files
+3. **Data Download**: The script downloads **all** NDJSON files (there can be multiple files for completions, chat, etc.)
+4. **Parsing**: Each line in the NDJSON files is parsed as a JSON object containing:
+   ```json
+   {
+     "user_login": "developer-username",
+     "day": "2026-05-10",
+     "editor": "cli",  // or "vscode", "jetbrains", "neovim", etc.
+     "totals_by_editor": [
+       {
+         "editor": "cli",
+         "user_initiated_interaction_count": 15,
+         "code_generation_activity_count": 42,
+         "code_acceptance_activity_count": 38,
+         "loc_suggested_to_add_sum": 250,
+         "loc_added_sum": 230
+       }
+     ]
+   }
+   ```
+
+5. **Editor Extraction**: The script looks for the `editor` field (or within `totals_by_editor` array)
+6. **CLI Filtering**: Rows where `editor` = `"cli"` (case-insensitive) are identified
+7. **Aggregation**: All CLI metrics are summed across the 28-day window per user
+8. **Output**: CLI-specific columns are added to the CSV report
+
+#### Data freshness and rolling window
+
+- **Rolling 28-day window**: The API provides data for the past 28 days, updated daily
+- **Update frequency**: GitHub updates the data approximately every 1-2 hours
+- **Historical data**: Only the past 28 days are available (older data is not retained)
+- **Granularity**: Daily breakdowns are available, but the report aggregates to 28-day totals
+
+#### CLI-specific columns in the report
+
+The following columns track CLI usage exclusively:
+
+| Column | Description | Calculation |
+|--------|-------------|-------------|
+| `metrics_cli_interactions_28d` | Number of CLI prompts/interactions | Sum of `user_initiated_interaction_count` where `editor='cli'` |
+| `metrics_cli_completions_28d` | Code completions shown via CLI | Sum of `code_generation_activity_count` where `editor='cli'` |
+| `metrics_cli_acceptances_28d` | CLI completions accepted | Sum of `code_acceptance_activity_count` where `editor='cli'` |
+| `metrics_cli_loc_suggested_28d` | Lines of code suggested via CLI | Sum of `loc_suggested_to_add_sum` where `editor='cli'` |
+| `metrics_cli_loc_added_28d` | Lines of code accepted via CLI | Sum of `loc_added_sum` where `editor='cli'` |
+| `metrics_cli_acceptance_pct_28d` | CLI acceptance rate | `(metrics_cli_acceptances_28d / metrics_cli_completions_28d) × 100` |
+
+**Editor breakdown columns** (show usage across all tools):
+
+| Column | Description |
+|--------|-------------|
+| `metrics_editors_used_28d` | Comma-separated list of all editors used (e.g., `"cli, vscode, jetbrains"`) |
+| `metrics_top_editor_28d` | Editor with the highest interaction count (e.g., `"vscode"` or `"cli"`) |
+
+#### Understanding the data
+
+**When will CLI metrics be 0?**
+- User has never used GitHub Copilot via the CLI
+- User only uses IDEs (VSCode, JetBrains, etc.)
+- The `editor` field is not included in older API responses (rare)
+
+**CLI vs IDE usage patterns:**
+- Developers using `gh copilot suggest` or `gh copilot explain` commands will show CLI metrics
+- Terminal-based workflows (bash scripting, SSH sessions, headless environments) typically use CLI
+- IDE users will have 0 CLI metrics but positive values in other editor metrics
+
+**Example interpretation:**
+
+```csv
+login,metrics_cli_interactions_28d,metrics_editors_used_28d,metrics_top_editor_28d
+alice,120,cli,cli
+bob,0,"vscode, jetbrains",vscode
+charlie,45,"cli, vscode",vscode
+```
+
+- **alice**: Primarily uses CLI (120 interactions, top editor is CLI)
+- **bob**: Never uses CLI, only IDE tools (VSCode and JetBrains)
+- **charlie**: Uses both CLI and IDE, but prefers VSCode (45 CLI interactions, but VSCode is the top editor)
+
+#### API field mappings
+
+The script handles multiple API response formats:
+
+**Nested format** (preferred):
+```json
+{
+  "totals_by_editor": [
+    {
+      "editor": "cli",
+      "user_initiated_interaction_count": 15,
+      "code_generation_activity_count": 42
+    }
+  ]
+}
+```
+
+**Flat format** (fallback):
+```json
+{
+  "editor": "cli",
+  "user_initiated_interaction_count": 15,
+  "code_generation_activity_count": 42
+}
+```
+
+**Alternative field names** (for compatibility):
+- `editor`, `client`, or `ide` field names are all recognized
+- All values are normalized to lowercase (e.g., `"CLI"` → `"cli"`)
+
+#### Important notes
+
+1. **CLI metrics are additive** — they're a subset of your total Copilot usage, not separate
+2. **Editor field is case-insensitive** — `"CLI"`, `"cli"`, `"Cli"` all count as CLI
+3. **Multiple editors per user** — users can appear in both CLI and IDE metrics if they use both
+4. **Data retention** — only 28-day rolling window is available
+5. **API rate limits** — the script respects GitHub API rate limits with automatic retries
 
 ---
 
