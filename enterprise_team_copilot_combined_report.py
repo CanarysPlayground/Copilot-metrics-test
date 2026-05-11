@@ -1100,16 +1100,18 @@ def normalize_editor_name(editor_value: str) -> str:
     - "gh_cli", "github-cli", etc. - other variations
     
     This function normalizes all CLI-related values to "cli" for consistent reporting.
+    Uses delimiter-based matching to avoid false positives like "eclipse".
     Other editor values (vscode, jetbrains, neovim, etc.) pass through unchanged.
     """
     normalized = editor_value.lower().strip()
     
-    # Match CLI-specific patterns to avoid false positives like "eclipse"
-    # Check for exact match or CLI as a word/component (preceded/followed by delimiter)
-    if normalized == "cli" or normalized.startswith("cli-") or normalized.startswith("cli_") or \
-       normalized.endswith("-cli") or normalized.endswith("_cli") or \
-       "-cli-" in normalized or "_cli_" in normalized or \
-       "gh-cli" in normalized or "copilot_cli" in normalized or "github-cli" in normalized:
+    # Match CLI-specific patterns using delimiters to avoid false positives
+    # Covers: "cli", "gh-cli", "gh_cli", "copilot_cli", "github-cli", "cli-tool", "tool-cli", etc.
+    # Excludes: "eclipse", "client", etc. (no delimiter around "cli" substring)
+    if (normalized == "cli" or 
+        normalized.startswith("cli-") or normalized.startswith("cli_") or
+        normalized.endswith("-cli") or normalized.endswith("_cli") or
+        "-cli-" in normalized or "_cli_" in normalized):
         return "cli"
     
     return normalized
