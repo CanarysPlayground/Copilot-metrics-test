@@ -688,7 +688,7 @@ GET /enterprises/{enterprise}/copilot/metrics/reports/users-28-day/latest
    ```
 
 5. **Editor Extraction**: The script looks for the `editor` field (or within `totals_by_editor` array)
-6. **CLI Filtering**: Rows where `editor` = `"cli"` (case-insensitive) are identified
+6. **CLI Filtering**: Rows where `editor` contains `"cli"` (case-insensitive) are identified, including variations like `"gh-cli"`, `"copilot_cli"`, etc.
 7. **Aggregation**: All CLI metrics are summed across the 28-day window per user
 8. **Output**: CLI-specific columns are added to the CSV report
 
@@ -773,14 +773,16 @@ The script handles multiple API response formats:
 **Alternative field names** (for compatibility):
 - `editor`, `client`, or `ide` field names are all recognized
 - All values are normalized to lowercase (e.g., `"CLI"` → `"cli"`)
+- **CLI variations are automatically detected**: `"cli"`, `"gh-cli"`, `"copilot_cli"`, `"github-cli"`, etc. are all treated as CLI
 
 #### Important notes
 
 1. **CLI metrics are additive** — they're a subset of your total Copilot usage, not separate
 2. **Editor field is case-insensitive** — `"CLI"`, `"cli"`, `"Cli"` all count as CLI
-3. **Multiple editors per user** — users can appear in both CLI and IDE metrics if they use both
-4. **Data retention** — only 28-day rolling window is available
-5. **API rate limits** — the script respects GitHub API rate limits with automatic retries
+3. **CLI variations supported** — `"gh-cli"`, `"copilot_cli"`, and any editor value with CLI delimiters is recognized
+4. **Multiple editors per user** — users can appear in both CLI and IDE metrics if they use both
+5. **Data retention** — only 28-day rolling window is available
+6. **API rate limits** — the script respects GitHub API rate limits with automatic retries
 
 ---
 
