@@ -5,7 +5,7 @@ import json
 import re
 import smtplib
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -573,6 +573,12 @@ def fetch_copilot_billing_seats_by_login():
         login = ((s.get("assignee") or {}).get("login") or "").strip()
         if login:
             by_login[login] = s
+
+    seats_with_created_at_count = sum(1 for s in by_login.values() if s.get("created_at"))
+    print(
+        f"  Seats API: {len(by_login)} seat(s) indexed; "
+        f"{seats_with_created_at_count} have seat_created_at (license age will be computed for those)."
+    )
     return by_login
 
 def fetch_monthly_premium_requests_by_login(
@@ -721,6 +727,28 @@ def is_active(last_activity_at):
         return "active" if (now - last_activity) <= timedelta(days=30) else "inactive"
     except Exception:
         return "inactive"
+
+
+def license_age_days(seat_created_at: str) -> int | None:
+    """Return the number of whole days since a Copilot seat was allocated.
+
+    Returns an integer (≥ 0) on success, or None when *seat_created_at* is
+    absent or cannot be parsed.
+
+    Uses UTC explicitly so the comparison is always between two timezone-aware
+    datetimes, regardless of how the API encodes the timestamp.
+    """
+    if not seat_created_at:
+        return None
+    try:
+        created = datetime.fromisoformat(seat_created_at.replace("Z", "+00:00"))
+        # Ensure the parsed datetime is timezone-aware (treat naive as UTC).
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return max(0, (now - created).days)
+    except Exception:
+        return None
 
 # -------------------------
 # Enterprise teams & memberships
@@ -1703,6 +1731,11 @@ def send_report_email(to_addr: str, csv_path: str, team_name: str, date_str: str
         f"  copilot_assigned        Whether the user has a Copilot seat (yes/no)\n"
         f"  plan_type               Copilot plan (e.g. copilot_enterprise)\n"
         f"  last_activity_at        Timestamp of the user's last Copilot activity\n"
+        f"  seat_created_at         Timestamp when the Copilot seat was allocated to the user\n"
+        f"                          (seat_created_at / created_at field from the seats API).\n"
+        f"                          Source: GET /enterprises/{{ent}}/copilot/billing/seats.\n"
+        f"  license_age_days        Whole days elapsed since the seat was allocated (seat_created_at → today).\n"
+        f"                          Empty when seat_created_at is unavailable.\n"
         f"  active_status           active = last activity within 30 days; otherwise inactive\n\n"
         f"Billing (calendar month – full month from day 1 to last day)\n"
         f"  billing_period                  The billing month queried, e.g. '2026-03' for March 2026.\n"
@@ -2026,6 +2059,8 @@ def main():
         "copilot_assigned",
         "plan_type",
         "last_activity_at",
+        "seat_created_at",
+        "license_age_days",
         "active_status",
         # metrics (28d rolling window)
         "metrics_interactions_28d",
@@ -2144,6 +2179,11 @@ def main():
                 "copilot_assigned": "yes" if seat else "no",
                 "plan_type": (seat or {}).get("plan_type", "") if seat else "",
                 "last_activity_at": (seat or {}).get("last_activity_at", "") if seat else "",
+                "seat_created_at": (seat or {}).get("created_at", "") if seat else "",
+                "license_age_days": (
+                    license_age_days((seat or {}).get("created_at", ""))
+                    if seat else None
+                ),
                 "active_status": is_active((seat or {}).get("last_activity_at")) if seat else "inactive",
                 # Billing period: the calendar month covered by the premium-request columns.
                 # Format: YYYY-MM (e.g. "2026-03" for March 2026).
